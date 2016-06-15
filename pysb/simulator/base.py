@@ -255,7 +255,8 @@ class Simulator(object):
         self._yexpr_view = [self._yexpr[n].view(float).reshape(len(
             self._yexpr[n]), -1) for n in range(nsims)]
         param_values = self.param_values
-
+        subs = dict((p, param_values[i]) for i, p in
+                        enumerate(self.model.parameters))
         # loop over simulations
         for n in range(nsims):
             # observables
@@ -265,8 +266,7 @@ class Simulator(object):
 
             # expressions
             obs_dict = dict((k, self._yobs[n][k]) for k in obs_names)
-            subs = dict((p, param_values[i]) for i, p in
-                        enumerate(self.model.parameters))
+            
             for i, expr in enumerate(exprs):
                 expr_subs = expr.expand_expr().subs(subs)
                 func = sympy.lambdify(obs_names, expr_subs, "numpy")
