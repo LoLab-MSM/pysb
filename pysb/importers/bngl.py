@@ -1,7 +1,7 @@
 from pysb.core import MonomerPattern, ComplexPattern, RuleExpression, \
     ReactionPattern, ANY, WILD
 from pysb.builder import Builder
-from pysb.bng import BngConsole
+from pysb.bng import BngFileInterface
 import xml.etree.ElementTree
 import re
 from sympy.parsing.sympy_parser import parse_expr
@@ -25,11 +25,12 @@ class BnglBuilder(Builder):
 
     See :py:func:`model_from_bngl` for further details.
     """
-    def __init__(self, filename, force=False):
+    def __init__(self, filename, force=False, cleanup=True):
         super(BnglBuilder, self).__init__()
-        with BngConsole(model=None) as con:
-            con.load_bngl(filename)
+        with BngFileInterface(model=None, cleanup=cleanup) as con:
+            con.action('readFile', file=filename, skip_actions=1)
             con.action('writeXML', evaluate_expressions=0)
+            con.execute()
             self._force = force
             self._x = xml.etree.ElementTree.parse('%s.xml' %
                                                   con.base_filename)\
@@ -154,7 +155,7 @@ class BnglBuilder(Builder):
             cplx_pats = []
             for mp in o.iterfind(_ns('{0}ListOfPatterns/{0}Pattern')):
                 match_once = mp.get('matchOnce')
-                match_once = 1 if match_once == "1" else 0
+                match_once = True if match_once == "1" else False
                 cplx_pats.append(ComplexPattern(self._parse_species(mp),
                                                 compartment=None,
                                                 match_once=match_once))
@@ -292,12 +293,26 @@ class BnglBuilder(Builder):
             rule.rate_reverse = rev_rate
 
     def _parse_expressions(self):
+        expr_namespace = {p.name: p.value for p in self.model.parameters}
+        expr_namespace.update({o.name: o for o in
+                               self.model.observables})
+
         for e in self._x.iterfind(_ns('{0}ListOfFunctions/{0}Function')):
             if e.find(_ns('{0}ListOfArguments/{0}Argument')) is not None:
                 self._warn_or_except('Function %s is local, which is not '
                                      'supported in PySB' % e.get('id'))
-            self.expression(e.get('id'), parse_expr(e.find(_ns(
-                '{0}Expression')).text.replace('^', '**')))
+            expr_name = e.get('id')
+            expr_text = e.find(_ns('{0}Expression')).text.replace('^', '**')
+            expr_val = 0
+            try:
+                expr_val = parse_expr(expr_text, local_dict=expr_namespace)
+            except Exception as ex:
+                self._warn_or_except('Could not parse expression %s: '
+                                     '%s\n\nError: %s' % (expr_name,
+                                                          expr_text,
+                                                          ex.message))
+            expr_namespace[expr_name] = expr_val
+            self.expression(expr_name, expr_val)
 
     def _parse_bng_xml(self):
         self.model.name = self._x.get(_ns('id'))
@@ -310,7 +325,7 @@ class BnglBuilder(Builder):
         self._parse_rules()
 
 
-def model_from_bngl(filename, force=False):
+def model_from_bngl(filename, force=False, cleanup=True):
     """
     Convert a BioNetGen .bngl model file into a PySB Model.
 
@@ -337,6 +352,9 @@ def model_from_bngl(filename, force=False):
         Setting to True will attempt to ignore any import errors, which may
         lead to a model that only poorly represents the original. Use at own
         risk!
+    cleanup : bool
+        Delete temporary directory on completion if True. Set to False for
+        debugging purposes.
     """
-    bb = BnglBuilder(filename, force=force)
+    bb = BnglBuilder(filename, force=force, cleanup=cleanup)
     return bb.model

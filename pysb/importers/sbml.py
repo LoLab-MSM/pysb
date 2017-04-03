@@ -1,10 +1,20 @@
 from __future__ import print_function as _
 from pysb.importers.bngl import model_from_bngl
-from pysb.bng import _get_bng_path
+import pysb.pathfinder as pf
 import subprocess
 import os
 import tempfile
 import shutil
+import re
+try:
+    # Python 3
+    from urllib.request import urlretrieve
+except ImportError:
+    # Python 2
+    from urllib import urlretrieve
+
+BIOMODELS_REGEX = re.compile(r'BIOMD[0-9]{10}')
+BIOMODELS_URL = 'http://www.ebi.ac.uk/biomodels-main/download?mid={}'
 
 
 class SbmlTranslationError(Exception):
@@ -66,7 +76,7 @@ def sbml_translator(input_file,
     string
         BNGL output filename
     """
-    sbmltrans_bin = os.path.join(os.path.dirname(_get_bng_path()),
+    sbmltrans_bin = os.path.join(os.path.dirname(pf.get_path('bng')),
                                  'bin/sbmlTranslator')
     sbmltrans_args = [sbmltrans_bin, '-i', input_file]
     if output_file is None:
@@ -153,7 +163,60 @@ def model_from_sbml(filename, force=False, cleanup=True, **kwargs):
     try:
         bngl_file = os.path.join(tmpdir, 'model.bngl')
         sbml_translator(filename, bngl_file, **kwargs)
-        return model_from_bngl(bngl_file, force=force)
+        return model_from_bngl(bngl_file, force=force, cleanup=cleanup)
     finally:
         if cleanup:
             shutil.rmtree(tmpdir)
+
+
+def model_from_biomodels(accession_no, force=False, cleanup=True, **kwargs):
+    """
+    Create a PySB Model based on a BioModels SBML model
+
+    Downloads file from BioModels (https://www.ebi.ac.uk/biomodels-main/)
+    and runs it through :func:`model_from_sbml`. See that function for
+    further details on additional arguments and implementation details.
+    Utilizes BioNetGen's SBMLTranslator.
+
+    Notes
+    -----
+
+    Read the `sbmlTranslator documentation
+    <http://bionetgen.org/index.php/SBML2BNGL>`_ for further information on
+    sbmlTranslator's limitations.
+
+    Parameters
+    ----------
+    accession_no : str
+        A BioModels accession number - the string 'BIOMD' followed by 10
+        digits, e.g. 'BIOMD0000000001'. For brevity, just the last digits will
+        be accepted as a string, e.g. '1' is equivalent the accession number
+        in the previous sentence.
+    force : bool, optional
+        The default, False, will raise an Exception if there are any errors
+        importing the model to PySB, e.g. due to unsupported features.
+        Setting to True will attempt to ignore any import errors, which may
+        lead to a model that only poorly represents the original. Use at own
+        risk!
+    cleanup : bool
+        Delete temporary directory on completion if True. Set to False for
+        debugging purposes.
+    **kwargs: kwargs
+        Keyword arguments to pass on to :func:`sbml_translator`
+    """
+    if not BIOMODELS_REGEX.match(accession_no):
+        try:
+            accession_no = 'BIOMD{:010d}'.format(int(accession_no))
+        except ValueError:
+            raise ValueError('accession_no must be an integer or a BioModels '
+                             'accession number (BIOMDxxxxxxxxxx)')
+    print('Retrieving {}'.format(accession_no))
+    filename, headers = urlretrieve(BIOMODELS_URL.format(accession_no))
+    try:
+        return model_from_sbml(filename, force=force, cleanup=cleanup,
+                               **kwargs)
+    finally:
+        try:
+            os.remove(filename)
+        except OSError:
+            pass

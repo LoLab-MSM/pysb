@@ -1,4 +1,6 @@
 from pysb.testing import *
+import sys
+import copy
 import numpy as np
 from pysb import Monomer, Parameter, Initial, Observable, Rule, Expression
 from pysb.simulator import ScipyOdeSimulator, SimulatorException
@@ -243,6 +245,45 @@ def test_earm_integration():
         ScipyOdeSimulator._use_inline = True
 
 
+def test_simulation_with_perturbations():
+    # Total model simulation time
+    tspan = np.linspace(0, 120, 13)
+
+    # Define model
+    Model()
+    Monomer('A')
+    Monomer('B')
+
+    Initial(A(), Parameter('A_0', 0))
+
+    Parameter('A_synth', 0)
+    Parameter('B_synth', 5)
+
+    Rule('synth_A', None >> A(), A_synth)
+    Rule('synth_B', None >> B(), B_synth)
+
+    Observable('A_obs', A())
+    Observable('B_obs', B())
+    # End define model
+
+    # Define perturbations by their time points
+    perturbations = {
+        30: {'A_synth': 10},
+        60: {'A_synth': 0},
+        90: {'A_synth': 10},
+        110: {B(): 0}
+    }
+    # End define perturbations
+
+    sim = ScipyOdeSimulator(model, tspan=tspan)
+
+    df = sim.run_with_perturbations(perturbations=perturbations,
+                                    initials=[[0, 1, 0],
+                                              [10, 10, 10]])
+
+    assert len(df.index) == len(tspan) * 2
+
+
 @raises(SimulatorException)
 def test_simulation_no_tspan():
     ScipyOdeSimulator(robertson.model).run()
@@ -253,3 +294,48 @@ def test_nonexistent_integrator():
     """Ensure nonexistent integrator raises."""
     ScipyOdeSimulator(robertson.model, tspan=np.linspace(0, 1, 2),
                       integrator='does_not_exist')
+
+
+def test_unicode_obsname_ascii():
+    """Ensure ascii-convetible unicode observable names are handled."""
+    t = np.linspace(0, 100)
+    rob_copy = copy.deepcopy(robertson.model)
+    rob_copy.observables[0].name = u'A_total'
+    sim = ScipyOdeSimulator(rob_copy)
+    simres = sim.run(tspan=t)
+
+
+if sys.version_info[0] < 3:
+    @raises(ValueError)
+    def test_unicode_obsname_nonascii():
+        """Ensure non-ascii unicode observable names error in python 2."""
+        t = np.linspace(0, 100)
+        rob_copy = copy.deepcopy(robertson.model)
+        rob_copy.observables[0].name = u'A_total\u1234'
+        sim = ScipyOdeSimulator(rob_copy)
+        simres = sim.run(tspan=t)
+
+
+def test_unicode_exprname_ascii():
+    """Ensure ascii-convetible unicode expression names are handled."""
+    t = np.linspace(0, 100)
+    rob_copy = copy.deepcopy(robertson.model)
+    ab = rob_copy.observables['A_total'] + rob_copy.observables['B_total']
+    expr = Expression(u'A_plus_B', ab, _export=False)
+    rob_copy.add_component(expr)
+    sim = ScipyOdeSimulator(rob_copy)
+    simres = sim.run(tspan=t)
+
+
+if sys.version_info[0] < 3:
+    @raises(ValueError)
+    def test_unicode_exprname_nonascii():
+        """Ensure non-ascii unicode expression names error in python 2."""
+        t = np.linspace(0, 100)
+        rob_copy = copy.deepcopy(robertson.model)
+        ab = rob_copy.observables['A_total'] + rob_copy.observables['B_total']
+        expr = Expression(u'A_plus_B\u1234', ab, _export=False)
+        rob_copy.add_component(expr)
+        sim = ScipyOdeSimulator(rob_copy)
+        simres = sim.run(tspan=t)
+

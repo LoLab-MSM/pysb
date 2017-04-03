@@ -48,8 +48,11 @@ class Simulator(object):
         If passed as a dictionary, keys must be parameter names.
         If not specified, parameter values will be taken directly from
         model.parameters.
-    verbose : bool, optional (default: False)
-        Verbose output.
+    verbose : bool or int, optional (default: False)
+        Sets the verbosity level of the logger. See the logging levels and
+        constants from Python's logging module for interpretation of integer
+        values. False is equal to the PySB default level (currently WARNING),
+        True is equal to DEBUG.
 
     Attributes
     ----------
@@ -83,8 +86,15 @@ class Simulator(object):
                  param_values=None, verbose=False, **kwargs):
         # Get or create base a PySB logger for this module and model
         self._logger = get_logger(self.__module__, model=model)
-        if verbose:
-            self._logger.setLevel(logging.DEBUG)
+        if isinstance(verbose, bool):
+            if verbose:
+                # _logger is actually a LoggerAdapter, so we need to set the level
+                # on the underlying logger
+                self._logger.logger.setLevel(logging.DEBUG)
+        elif isinstance(verbose, int):
+            self._logger.logger.setLevel(verbose)
+        else:
+            raise ValueError('verbose must be boolean or integer log level')
         self._logger.debug('Simulator created')
         self._model = model
         self.verbose = verbose
@@ -121,7 +131,7 @@ class Simulator(object):
                                                  'ComplexPattern' %
                                                  repr(cplx_pat))
                     # if val is a number, convert it to a single-element array
-                    if not isinstance(val, collections.Sequence):
+                    if not isinstance(val, (collections.Sequence, np.ndarray)):
                         new_initials[cplx_pat] = np.array([val])
                     # otherwise, check whether simulator supports multiple
                     # initial values
@@ -242,7 +252,7 @@ class Simulator(object):
                 param_values_dict = self._params
                 # record the length of the arrays and make
                 # sure they're all the same.
-                for key,val in param_values_dict.items():
+                for key, val in param_values_dict.items():
                     if n_sims == 1:
                         n_sims = len(val)
                     elif len(val) != n_sims:
@@ -305,13 +315,7 @@ class Simulator(object):
                                  "model.parameters")
             self._params = new_params
 
-    @abstractmethod
-    def run(self, tspan=None, initials=None, param_values=None):
-        """Run a simulation.
-
-        Implementations should return a :class:`.SimulationResult` object.
-        """
-        self._logger.info('Simulation(s) started')
+    def _setup_run(self, tspan=None, initials=None, param_values=None):
         if tspan is not None:
             self.tspan = tspan
         if self.tspan is None:
@@ -358,7 +362,119 @@ class Simulator(object):
             # Network-free simulators don't have species, but we will want to
             # allow users to supply initials. Right now, that will raise an
             # exception. Need to think about this. --LAH
-        return None
+
+    @abstractmethod
+    def run(self, tspan=None, initials=None, param_values=None):
+        """Run a simulation.
+
+        Implementations should return a :class:`.SimulationResult` object.
+        """
+        self._logger.info('Simulation(s) started')
+        self._setup_run(tspan=tspan, initials=initials,
+                        param_values=param_values)
+
+    def run_with_perturbations(self, perturbations, **kwargs):
+        perturbation_times = sorted(perturbations.keys())
+
+        # First, set up tspan, param_values and initials
+        self._setup_run(kwargs.pop('tspan', None),
+                        kwargs.pop('initials', None),
+                        kwargs.pop('param_values', None))
+
+        actual_tspan = self.tspan
+        actual_initials = self.initials
+        actual_param_values = self.param_values
+
+        if not np.allclose(sorted(self.tspan), self.tspan, atol=1e-16):
+            raise ValueError('This function requires tspan to be in '
+                             'ascending order')
+
+        for t in perturbation_times:
+            if t < self.tspan[0] or t > self.tspan[-1]:
+                raise ValueError('Perturbation time %f is not in the range '
+                                 'specified by tspan %s' % (t,
+                                                            str(self.tspan)))
+            if not any(np.isclose(t, self.tspan)):
+                raise ValueError(
+                    'Perturbation time %f is not defined in tspan'
+                    % t)
+
+        # Create the tspans for each simulation stage
+        tspans = np.split(self.tspan,
+                          np.searchsorted(self.tspan, perturbation_times))
+        for i in range(len(tspans) - 1):
+            tspans[i] = np.append(tspans[i], tspans[i + 1][0])
+
+        self._logger.info('Splitting simulation into %d chunks' % len(tspans))
+
+        # Do an initial simulation with the above setup until the point
+        # at which
+        # we want to change a parameter (perturbation_time)
+        self.tspan = tspans[0]
+        res = self.run(**kwargs)
+
+        df_out = res.dataframe
+
+        # Need to update parameters defined in earlier simulations, since
+        # they need to persist across future chunks
+        param_updates = {}
+
+        for i, t in enumerate(perturbation_times, 1):
+            self._logger.info('Running simulation chunk %d' % (i + 1))
+            self._logger.debug('tspan for this chunk: ' + str(tspans[i]))
+
+            # Set initials as at final timepoint of previous simulation
+            if res.nsims > 1:
+                new_initials = [res.species[n][-1] for n in range(res.nsims)]
+            else:
+                new_initials = res.species[-1]
+
+            # Update initials and param_values with perturbations
+            for k, v in perturbations[t].items():
+                if isinstance(k, (MonomerPattern, ComplexPattern)):
+                    sp_ind = self.model.get_species_index(
+                        as_complex_pattern(k))
+                    if sp_ind is None:
+                        raise ValueError('ComplexPattern %s was not found in '
+                                         'the species list' % str(k))
+                    if res.nsims == 1:
+                        new_initials[sp_ind] = v
+                    else:
+                        for n in range(res.nsims):
+                            new_initials[n][sp_ind] = v
+                else:
+                    param_updates[k] = v
+            self._logger.debug(new_initials)
+            self.initials = new_initials
+            if param_updates:
+                self.param_values = param_updates
+
+            # Run simulation and get results
+            self.tspan = tspans[i]
+            res = self.run(**kwargs)
+
+            if res.nsims == 1:
+                df_out = pd.concat([df_out.iloc[:-1], res.dataframe])
+            else:
+                df_out.drop(df_out.index[
+                                np.arange(start=len(df_out.index) /
+                                                      res.nsims - 1,
+                                            stop=len(df_out.index),
+                                            step=len(df_out.index) / res.nsims
+                                            )],
+                            inplace=True)
+                df_out = pd.concat([df_out, res.dataframe])
+                df_out.sortlevel(inplace=True)
+
+        self._logger.info('All simulation chunks complete')
+
+        # Reset tspan, initials and param_values to their original settings
+        # with perturbations removed
+        self.tspan = actual_tspan
+        self.initials = actual_initials
+        self.param_values = actual_param_values
+
+        return df_out
 
 
 class SimulationResult(object):
@@ -400,7 +516,8 @@ class SimulationResult(object):
     >>> from pysb.simulator import ScipyOdeSimulator
     >>> import numpy as np
     >>> np.set_printoptions(precision=4)
-    >>> sim = ScipyOdeSimulator(model, tspan=np.linspace(0, 40, 10))
+    >>> sim = ScipyOdeSimulator(model, tspan=np.linspace(0, 40, 10), \
+                                integrator_options={'atol': 1e-20})
     >>> simulation_result = sim.run()
 
     ``simulation_result`` is a :class:`SimulationResult` object. An
@@ -408,14 +525,15 @@ class SimulationResult(object):
 
     >>> print(simulation_result.observables['Bax_c0']) \
         #doctest: +NORMALIZE_WHITESPACE
-    [  1.0000e+00   1.1744e-02   1.3791e-04   1.6196e-06   1.9021e-08
-       2.2344e-10   2.6394e-12   4.8067e-14  -6.2097e-14  -7.5308e-15]
+    [  1.0000e+00   1.1744e-02   1.3791e-04   1.6196e-06   1.9020e-08
+       2.2337e-10   2.6232e-12   3.0806e-14   3.6178e-16   4.2492e-18]
 
     It is also possible to retrieve the value of all observables at a
     particular time point, e.g. the final concentrations:
 
-    >>> print(simulation_result.observables[-1]) #doctest: +ELLIPSIS
-    (-7.5308...e-15, -1.6809...e-13, 1.0000...)
+    >>> print(simulation_result.observables[-1]) \
+        #doctest: +NORMALIZE_WHITESPACE
+    (  4.2492e-18,   1.6996e-16,  1.)
 
     Expressions are read in the same way as observables:
 
@@ -430,19 +548,19 @@ class SimulationResult(object):
      [  1.1744e-02   5.2194e-02   9.3606e-01]
      [  1.3791e-04   1.2259e-03   9.9864e-01]
      [  1.6196e-06   2.1595e-05   9.9998e-01]
-     [  1.9021e-08   3.3814e-07   1.0000e+00]
-     [  2.2344e-10   4.9648e-09   1.0000e+00]
-     [  2.6394e-12   7.0287e-11   1.0000e+00]
-     [  4.8067e-14   1.3515e-12   1.0000e+00]
-     [ -6.2097e-14  -1.3652e-12   1.0000e+00]
-     [ -7.5308e-15  -1.6809e-13   1.0000e+00]]
+     [  1.9020e-08   3.3814e-07   1.0000e+00]
+     [  2.2337e-10   4.9637e-09   1.0000e+00]
+     [  2.6232e-12   6.9951e-11   1.0000e+00]
+     [  3.0806e-14   9.5840e-13   1.0000e+00]
+     [  3.6178e-16   1.2863e-14   1.0000e+00]
+     [  4.2492e-18   1.6996e-16   1.0000e+00]]
 
     Species, observables and expressions can be combined into a single numpy
     ndarray and accessed similarly. Here, the initial concentrations of all
     these entities are examined:
 
-    >>> print(simulation_result.all[0])
-    (1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+    >>> print(simulation_result.all[0]) #doctest: +NORMALIZE_WHITESPACE
+    ( 1.,  0.,  0.,  1.,  0.,  0.,  0.)
 
     The ``all`` array can be accessed as a pandas DataFrame object,
     which allows for more convenient indexing and access to pandas advanced
@@ -498,7 +616,19 @@ class SimulationResult(object):
         exprs = self._model.expressions_dynamic()
         expr_names = [expr.name for expr in exprs]
         model_obs = self._model.observables
-        obs_names = model_obs.keys()
+        obs_names = list(model_obs.keys())
+
+        if not _allow_unicode_recarray():
+            for name_list, name_type in zip((expr_names, obs_names),
+                                            ('Expression', 'Observable')):
+                for i, name in enumerate(name_list):
+                    try:
+                        name_list[i] = name.encode('ascii')
+                    except UnicodeEncodeError:
+                        error_msg = 'Non-ASCII compatible' + \
+                                    '%s names not allowed' % name_type
+                        raise ValueError(error_msg)
+
         yobs_dtype = zip(obs_names, itertools.repeat(float)) if obs_names \
             else float
         yexpr_dtype = zip(expr_names, itertools.repeat(float)) if expr_names \
@@ -622,3 +752,15 @@ class SimulationResult(object):
         List of trajectory sets. The first dimension contains expressions.
         """
         return self._squeeze_output(self._yexpr)
+
+def _allow_unicode_recarray():
+    """Return True if numpy recarray can take unicode data type.
+
+    In python 2, numpy doesn't allow unicode strings as names in arrays even
+    if they are ascii encodeable. This function tests this directly.
+    """
+    try:
+        np.ndarray((1,), dtype=[(u'X', float)])
+    except TypeError:
+        return False
+    return True
