@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import numpy as np
 from pysb.bng import generate_equations
+import pysb.simulator.base
+from pysb.logging import get_logger
 
 
 class InitialsSensitivity(object):
@@ -82,7 +84,6 @@ class InitialsSensitivity(object):
             objective_function=obj_func_cell_cycle,\
             solver=solver\
         )
-    Number of simulations to run = 8
     >>> print(sens.b_matrix)
     [[((0.8, 'cdc0'), (0.8, 'cdc0')) ((0.8, 'cdc0'), (1.2, 'cdc0'))
       ((0.8, 'cdc0'), (0.8, 'cyc0')) ((0.8, 'cdc0'), (1.2, 'cyc0'))]
@@ -110,15 +111,22 @@ class InitialsSensitivity(object):
       [ 0.      0.      0.      0.    ]
       [ 5.0243  5.0243  0.      0.    ]
       [-4.5381 -4.5381  0.      0.    ]]
-    >>> sens.create_boxplot_and_heatplot()
+    >>> sens.create_boxplot_and_heatplot() #doctest: +ELLIPSIS
+    <matplotlib.figure.Figure object ...>
     """
 
     def __init__(self, solver, values_to_sample, objective_function,
                  observable):
         self._model = solver.model
+        self._logger = get_logger(__name__, model=self._model)
+        self._logger.info('%s created for observable %s' % (
+            self.__class__.__name__, observable))
         generate_equations(self._model)
-        self._proteins_of_interest_cache = None
+        self._ic_params_of_interest_cache = None
         self._values_to_sample = values_to_sample
+        if solver is None or not isinstance(solver,
+                                            pysb.simulator.base.Simulator):
+            raise(TypeError, "solver must be a pysb.simulator object")
         self._solver = solver
         self.objective_function = objective_function
         self.observable = observable
@@ -137,20 +145,21 @@ class InitialsSensitivity(object):
         self._objective_fn_standard = None
 
     @property
-    def _proteins_of_interest(self):
-        if self._proteins_of_interest_cache is None:
-            self._proteins_of_interest_cache = list(
+    def _ic_params_of_interest(self):
+        if self._ic_params_of_interest_cache is None:
+            self._ic_params_of_interest_cache = list(
                 (i[1].name for i in self._model.initial_conditions))
             # remove source species
-            if '__source_0' in self._proteins_of_interest_cache:
-                self._proteins_of_interest_cache.remove('__source_0')
-            self._proteins_of_interest_cache = sorted(self._proteins_of_interest_cache)
+            if '__source_0' in self._ic_params_of_interest_cache:
+                self._ic_params_of_interest_cache.remove('__source_0')
+            self._ic_params_of_interest_cache = \
+                sorted(self._ic_params_of_interest_cache)
 
-        return self._proteins_of_interest_cache
+        return self._ic_params_of_interest_cache
 
     @property
-    def _n_proteins(self):
-        return len(self._proteins_of_interest)
+    def _n_species(self):
+        return len(self._ic_params_of_interest)
 
     @property
     def _n_sam(self):
@@ -158,7 +167,7 @@ class InitialsSensitivity(object):
 
     @property
     def _nm(self):
-        return self._n_proteins * self._n_sam
+        return self._n_species * self._n_sam
 
     @property
     def _size_of_matrix(self):
@@ -183,13 +192,13 @@ class InitialsSensitivity(object):
 
         # separate each species sensitivity
         for j in range(0, self._nm, self._n_sam):
-            per_protein1 = []
+            per_species1 = []
             for i in range(0, self._nm, self._n_sam):
                 if i != j:
                     tmp = sens_matrix[j:j + self._n_sam,
                           i:i + self._n_sam].copy()
-                    per_protein1.append(tmp)
-            sens_ij_nm.append(per_protein1)
+                    per_species1.append(tmp)
+            sens_ij_nm.append(per_species1)
         return sens_ij_nm
 
     def _calculate_objective(self, function_value):
@@ -219,9 +228,6 @@ class InitialsSensitivity(object):
         if out_dir is not None:
             if not os.path.exists(out_dir):
                 os.mkdir(out_dir)
-        if self._solver is None:
-            raise(TypeError, "Must provide a pysb.simulator to run "
-                             "function or when initializing the class")
         self._solver.initials = None
         self._solver.param_values = None
         sim_results = self._solver.run(param_values=None, initials=None)
@@ -260,8 +266,8 @@ class InitialsSensitivity(object):
             p_name = os.path.join(out_dir, '{}_p_matrix.csv'.format(save_name))
             p_prime_name = os.path.join(
                 out_dir, '{}_p_prime_matrix.csv'.format(save_name))
-            print("Saving p matrix and p' matrix to {} and {}".format(
-                p_name, p_prime_name))
+            self._logger.debug("Saving p matrix and p' matrix to {} and {}".
+                               format(p_name, p_prime_name))
 
             np.savetxt(p_name, self.p_matrix)
             np.savetxt(p_prime_name, self.p_prime_matrix)
@@ -269,16 +275,12 @@ class InitialsSensitivity(object):
     def _create_index_of_species(self):
         """ create dictionary of initial conditions by index """
         index_of_init_condition = {}
-        for i in range(len(self._model.initial_conditions)):
-            for j in range(len(self._model.species)):
-                if str(self._model.initial_conditions[i][0]) \
-                        == str(self._model.species[j]):
-                    x = self._model.initial_conditions[i][1].value
-                    self._original_initial_conditions[j] = x
-                    if self._model.initial_conditions[i][1].name \
-                            in self._proteins_of_interest:
-                        index_of_init_condition[
-                            self._model.initial_conditions[i][1].name] = j
+        for ic_sp, ic_param in self._model.initial_conditions:
+            for sp_idx, sp in enumerate(self._model.species):
+                if ic_sp.is_equivalent_to(sp):
+                    self._original_initial_conditions[sp_idx] = ic_param.value
+                    if ic_param.name in self._ic_params_of_interest:
+                        index_of_init_condition[ic_param.name] = sp_idx
         index_of_species_of_interest = collections.OrderedDict(
             sorted(index_of_init_condition.items()))
         return index_of_species_of_interest
@@ -328,14 +330,14 @@ class InitialsSensitivity(object):
         a_matrix = cartesian_product(self._values_to_sample,
                                      self._index_of_species_of_interest)
         # reshape to flatten
-        a_matrix = a_matrix.T.reshape(self._n_sam * self._n_proteins)
+        a_matrix = a_matrix.T.reshape(self._n_sam * self._n_species)
         # creates matrix b
         self.b_matrix = cartesian_product(a_matrix, a_matrix)
 
         # create matrix a'
         a_prime = cartesian_product(np.ones(self._n_sam),
                                     self._index_of_species_of_interest)
-        a_prime = a_prime.T.reshape(self._n_sam * self._n_proteins)
+        a_prime = a_prime.T.reshape(self._n_sam * self._n_species)
 
         # creates matrix b prime
         self.b_prime_matrix = cartesian_product(a_prime, a_matrix)
@@ -383,7 +385,8 @@ class InitialsSensitivity(object):
         x = b_to_run[list(self.b_index)]
         y = b_prime[list(bp_not_in_b_raw)]
         simulations = np.vstack((x, y))
-        print("Number of simulations to run = %s" % len(simulations))
+        self._logger.debug("Number of simulations to run = %s" % len(
+                           simulations))
         return simulations
 
     def create_plot_p_h_pprime(self, save_name=None, out_dir=None, show=False):
@@ -400,6 +403,11 @@ class InitialsSensitivity(object):
             location to save figure
         show : bool
             show the plot if True
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The matplotlib figure object for further adjustments, if required
         """
         colors = 'seismic'
         sens_matrix = self.p_matrix - self.p_prime_matrix
@@ -441,6 +449,8 @@ class InitialsSensitivity(object):
             plt.show()
         plt.close()
 
+        return fig
+
     def create_individual_pairwise_plots(self, save_name=None, out_dir=None,
                                          show=False):
         """
@@ -454,23 +464,28 @@ class InitialsSensitivity(object):
             output directory
         show : bool
             show figure
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The matplotlib figure object for further adjustments, if required
         """
         colors = 'seismic'
         sens_matrix = self.p_matrix - self.p_prime_matrix
         v_max = max(np.abs(self.p_matrix.min()), self.p_matrix.max())
         v_min = -1 * v_max
-        plt.figure(figsize=(self._n_proteins + 6, self._n_proteins + 6))
-        gs = gridspec.GridSpec(self._n_proteins, self._n_proteins)
+        fig = plt.figure(figsize=(self._n_species + 6, self._n_species + 6))
+        gs = gridspec.GridSpec(self._n_species, self._n_species)
         # creates a plot of each species vs each species
         # adds space between plots so you can zoom in on output pairs
         for n, j in enumerate(range(0, self._nm, self._n_sam)):
             for m, i in enumerate(range(0, self._nm, self._n_sam)):
                 ax2 = plt.subplot(gs[n, m])
                 if n == 0:
-                    ax2.set_xlabel(self._proteins_of_interest[m], fontsize=20)
+                    ax2.set_xlabel(self._ic_params_of_interest[m], fontsize=20)
                     ax2.xaxis.set_label_position('top')
                 if m == 0:
-                    ax2.set_ylabel(self._proteins_of_interest[n], fontsize=20)
+                    ax2.set_ylabel(self._ic_params_of_interest[n], fontsize=20)
                 plt.xticks([])
                 plt.yticks([])
                 if i != j:
@@ -498,6 +513,8 @@ class InitialsSensitivity(object):
             plt.show()
         plt.close()
 
+        return fig
+
     def create_boxplot_and_heatplot(self, x_axis_label=None, save_name=None,
                                     out_dir=None, show=False):
         """
@@ -513,13 +530,18 @@ class InitialsSensitivity(object):
             output directory to save figures
         show : bool
             Show plot if True
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The matplotlib figure object for further adjustments, if required
         """
 
         colors = 'seismic'
         sens_ij_nm = self.sensitivity_multiset
 
         # Create heatmap and boxplot of data
-        plt.figure(figsize=(14, 10))
+        fig = plt.figure(figsize=(14, 10))
         plt.subplots_adjust(hspace=0.1)
 
         # use gridspec to scale colorbar nicely
@@ -542,9 +564,9 @@ class InitialsSensitivity(object):
                         vmax=v_max, extent=[0, self._nm, 0, self._nm])
 
         shape_label = np.arange(self._n_sam / 2, self._nm, self._n_sam)
-        plt.xticks(shape_label, self._proteins_of_interest, rotation='vertical',
-                   fontsize=12)
-        plt.yticks(shape_label, reversed(self._proteins_of_interest),
+        plt.xticks(shape_label, self._ic_params_of_interest,
+                   rotation='vertical', fontsize=12)
+        plt.yticks(shape_label, reversed(self._ic_params_of_interest),
                    fontsize=12)
         x_ticks = ([i for i in range(0, self._nm, self._n_sam)])
         ax1.set_xticks(x_ticks, minor=True)
@@ -565,9 +587,9 @@ class InitialsSensitivity(object):
         ax2.set_xlim(v_min - 2, v_max + 2)
         if x_axis_label is not None:
             ax2.set_xlabel(x_axis_label, fontsize=12)
-        plt.setp(ax2, yticklabels=reversed(self._proteins_of_interest))
+        plt.setp(ax2, yticklabels=reversed(self._ic_params_of_interest))
         ax2.yaxis.tick_left()
-        ax2.set_aspect(1. / ax2.get_data_ratio(), adjustable='box', )
+        ax2.set_aspect(1. / ax2.get_data_ratio(), adjustable='box')
         if save_name is not None:
             if out_dir is None:
                 out_dir = '.'
@@ -582,6 +604,8 @@ class InitialsSensitivity(object):
         if show:
             plt.show()
         plt.close()
+
+        return fig
 
 
 def cartesian_product(array_1, array_2):
@@ -599,5 +623,5 @@ def cartesian_product(array_1, array_2):
         array of shape (len(array_1) x len(array_2))
     """
     a = list(product(array_1, array_2))
-    a = np.asarray(a, dtype=','.join('object' for _ in range(len(a[0]))))
+    a = np.asarray(a, dtype=','.join(['object'] * len(a[0])))
     return a.reshape(len(array_1), len(array_2))
