@@ -15,8 +15,8 @@ _path_config = {
         'executable': 'KaSa',
         'env_var': 'KAPPAPATH',
         'search_paths': {
-            'posix': ('/usr/local/share/KaSim', ),
-            'nt': ('c:/Program Files/KaSim', )
+            'posix': ('/usr/local/share/KaSa', ),
+            'nt': ('c:/Program Files/KaSa', )
         }
     },
     'kasim': {
@@ -31,7 +31,7 @@ _path_config = {
     'cupsoda': {
         'name': 'cupSODA',
         'executable': {
-            'posix': 'cupsoda',
+            'posix': 'cupSODA',
             'nt': 'cupsoda.exe'
         },
         'env_var': 'CUPSODAPATH',
@@ -39,7 +39,25 @@ _path_config = {
             'posix': ('/usr/local/share/cupSODA',),
             'nt': ('c:/Program Files/cupSODA',)
         }
-    }
+    },
+    'stochkit_ssa': {
+        'name': 'StochKit [SSA]',
+        'executable': 'ssa',
+        'env_var': 'STOCHKITPATH',
+        'search_paths': {
+            'posix': ('/usr/local/share/StochKit', ),
+            'nt': ('c:/Program Files/StochKit',)
+        }
+    },
+    'stochkit_tau_leaping': {
+        'name': 'StochKit [Tau Leaping]',
+        'executable': 'tau_leaping',
+        'env_var': 'STOCHKITPATH',
+        'search_paths': {
+            'posix': ('/usr/local/share/StochKit',),
+            'nt': ('c:/Program Files/StochKit',)
+        }
+    },
 }
 _path_cache = {}
 

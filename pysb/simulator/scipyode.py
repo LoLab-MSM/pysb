@@ -54,8 +54,11 @@ class ScipyOdeSimulator(Simulator):
         If passed as a dictionary, keys must be parameter names.
         If not specified, parameter values will be taken directly from
         model.parameters.
-    verbose : bool, optional (default: False)
-        Verbose output.
+    verbose : bool or int, optional (default: False)
+        Sets the verbosity level of the logger. See the logging levels and
+        constants from Python's logging module for interpretation of integer
+        values. False is equal to the PySB default level (currently WARNING),
+        True is equal to DEBUG.
     **kwargs : dict
         Extra keyword arguments, including:
 
@@ -139,21 +142,7 @@ class ScipyOdeSimulator(Simulator):
             # Substitute expanded parameter formulas for any named expressions
             for e in self._model.expressions:
                 eqns = re.sub(r'\b(%s)\b' % e.name, '(' + sympy.ccode(
-                    e.expand_expr()) + ')', eqns)
-
-            # Substitute sums of observable species that could've been added
-            # by expressions
-            for obs in self._model.observables:
-                obs_string = ''
-                for i in range(len(obs.coefficients)):
-                    if i > 0:
-                        obs_string += "+"
-                    if obs.coefficients[i] > 1:
-                        obs_string += str(obs.coefficients[i]) + "*"
-                    obs_string += "__s" + str(obs.species[i])
-                if len(obs.coefficients) > 1:
-                    obs_string = '(' + obs_string + ')'
-                eqns = re.sub(r'\b(%s)\b' % obs.name, obs_string, eqns)
+                    e.expand_expr(expand_observables=True)) + ')', eqns)
 
             # Substitute 'y[i]' for 'si'
             eqns = re.sub(r'\b__s(\d+)\b',
