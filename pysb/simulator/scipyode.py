@@ -337,7 +337,7 @@ class ScipyOdeSimulator(Simulator):
                                            param_values=param_values)
         n_sims = len(self.param_values)
         trajectories = np.ndarray((n_sims, len(self.tspan),
-                              len(self._model.species)))
+                                  len(self._model.species)))
         for n in range(n_sims):
             self._logger.info('Running simulation %d of %d', n + 1, n_sims)
             if self.integrator == 'lsoda':

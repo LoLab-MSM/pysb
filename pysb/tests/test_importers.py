@@ -1,9 +1,8 @@
-import pysb
 import os
 import pysb.pathfinder as pf
 from pysb.bng import BngFileInterface
 from pysb.importers.bngl import model_from_bngl, BnglImportError
-from pysb.importers.sbml import model_from_sbml
+from pysb.importers.sbml import model_from_sbml, model_from_biomodels
 import numpy
 from nose.tools import assert_raises_regexp
 import warnings
@@ -141,3 +140,8 @@ def test_sbml_import_flat_model():
 
 def test_sbml_import_structured_model():
     model_from_sbml(_sbml_location('test_sbml_structured_SBML'), atomize=True)
+
+
+def test_sbml_import_from_biomodels():
+    model_from_biomodels('1')
+    model_from_biomodels('2')
