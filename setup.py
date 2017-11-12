@@ -37,7 +37,7 @@ def main():
           install_requires=['numpy', 'scipy', 'sympy', 'networkx'],
           setup_requires=['nose'],
           tests_require=['coverage', 'pygraphviz', 'matplotlib', 'pexpect',
-                         'pandas', 'theano', 'h5py'],
+                         'pandas', 'theano', 'h5py', 'ipython'],
           cmdclass=cmdclass,
           include_package_data=True,
           use_2to3=True,
