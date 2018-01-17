@@ -14,6 +14,8 @@ except ImportError:
     theano = None
 try:
     from pathos.multiprocessing import Pool
+    import dill
+    dill.settings['recurse'] = True
 except ImportError:
     Pool = None
 import pysb.bng
@@ -28,8 +30,7 @@ import logging
 import itertools
 import contextlib
 import importlib
-import dill
-dill.settings['recurse'] = True
+
 
 class ScipyOdeSimulator(Simulator):
     """
