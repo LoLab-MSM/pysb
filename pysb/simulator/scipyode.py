@@ -23,6 +23,8 @@ import logging
 import itertools
 import contextlib
 import importlib
+from pathos.multiprocessing import Pool
+import functools
 
 
 class ScipyOdeSimulator(Simulator):
@@ -353,7 +355,7 @@ class ScipyOdeSimulator(Simulator):
             eqns = re.sub(r'\b(%s)\b' % p.name, 'p[%d]' % i, eqns)
         return eqns
 
-    def run(self, tspan=None, initials=None, param_values=None):
+    def run(self, tspan=None, initials=None, param_values=None, n_jobs=1):
         """
         Run a simulation and returns the result (trajectories)
 
@@ -376,38 +378,58 @@ class ScipyOdeSimulator(Simulator):
         super(ScipyOdeSimulator, self).run(tspan=tspan,
                                            initials=initials,
                                            param_values=param_values,
+                                           n_jobs=n_jobs,
                                            _run_kwargs=[])
         n_sims = len(self.param_values)
         trajectories = np.ndarray((n_sims, len(self.tspan),
                               len(self._model.species)))
-        for n in range(n_sims):
-            self._logger.info('Running simulation %d of %d', n + 1, n_sims)
+
+        if n_jobs == 1:
+            for n in range(n_sims):
+                self._logger.info('Running simulation %d of %d', n + 1, n_sims)
+                if self.integrator == 'lsoda':
+                    trajectories[n] = scipy.integrate.odeint(
+                        self.func,
+                        self.initials[n],
+                        self.tspan,
+                        Dfun=self.jac_fn,
+                        args=(self.param_values[n],),
+                        **self.opts)
+                else:
+                    self.integrator.set_initial_value(self.initials[n],
+                                                      self.tspan[0])
+                    # Set parameter vectors for RHS func and Jacobian
+                    self.integrator.set_f_params(self.param_values[n])
+                    if self._use_analytic_jacobian:
+                        self.integrator.set_jac_params(self.param_values[n])
+                    trajectories[n][0] = self.initials[n]
+                    i = 1
+                    while self.integrator.successful() and self.integrator.t < \
+                            self.tspan[-1]:
+                        self._logger.log(EXTENDED_DEBUG,
+                                         'Simulation %d/%d Integrating t=%g',
+                                         n + 1, n_sims, self.integrator.t)
+                        trajectories[n][i] = self.integrator.integrate(self.tspan[i])
+                        i += 1
+                    if self.integrator.t < self.tspan[-1]:
+                        trajectories[n, i:, :] = 'nan'
+        else:
             if self.integrator == 'lsoda':
-                trajectories[n] = scipy.integrate.odeint(
-                    self.func,
-                    self.initials[n],
-                    self.tspan,
-                    Dfun=self.jac_fn,
-                    args=(self.param_values[n],),
-                    **self.opts)
+                p = Pool(processes=n_jobs)
+
+                def worker(*args, **kwargs):
+                    func, y0, t = args
+                    Dfun, args = kwargs.values()
+                    trajectory = scipy.integrate.odeint(func, y0, t, Dfun=Dfun, args=args)
+                    return trajectory
+
+                results = [p.apply_async(worker, (self.func, self.initials[i], self.tspan),
+                                         {'Dfun': self.jac_fn, 'args': (self.param_values[i],)}) for i in range(n_sims)]
+                p.close()
+                p.join()
+                trajectories = [tr.get() for tr in results]
             else:
-                self.integrator.set_initial_value(self.initials[n],
-                                                  self.tspan[0])
-                # Set parameter vectors for RHS func and Jacobian
-                self.integrator.set_f_params(self.param_values[n])
-                if self._use_analytic_jacobian:
-                    self.integrator.set_jac_params(self.param_values[n])
-                trajectories[n][0] = self.initials[n]
-                i = 1
-                while self.integrator.successful() and self.integrator.t < \
-                        self.tspan[-1]:
-                    self._logger.log(EXTENDED_DEBUG,
-                                     'Simulation %d/%d Integrating t=%g',
-                                     n + 1, n_sims, self.integrator.t)
-                    trajectories[n][i] = self.integrator.integrate(self.tspan[i])
-                    i += 1
-                if self.integrator.t < self.tspan[-1]:
-                    trajectories[n, i:, :] = 'nan'
+                raise Exception('Multiprocessing can only by used with LSODA')
 
         tout = np.array([self.tspan]*n_sims)
         self._logger.info('All simulation(s) complete')
