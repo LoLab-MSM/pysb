@@ -15,7 +15,7 @@ except ImportError:
 try:
     from pathos.multiprocessing import Pool
 except ImportError:
-    pathos = None
+    Pool = None
 import pysb.bng
 import sympy
 import re
@@ -416,7 +416,7 @@ class ScipyOdeSimulator(Simulator):
                     if self.integrator.t < self.tspan[-1]:
                         trajectories[n, i:, :] = 'nan'
         else:
-            if pathos is None:
+            if Pool is None:
                 raise ImportError('pathos library is not installed')
             if self.integrator == 'lsoda':
                 p = Pool(processes=n_jobs)
@@ -424,7 +424,7 @@ class ScipyOdeSimulator(Simulator):
                 def worker(*args, **kwargs):
                     func, y0, t = args
                     Dfun, args = kwargs.values()
-                    trajectory = scipy.integrate.odeint(func, y0, t, Dfun=Dfun, args=args)
+                    trajectory = scipy.integrate.odeint(func, y0, t, Dfun=Dfun, args=args, **self.opts)
                     return trajectory
 
                 results = [p.apply_async(worker, (self.func, self.initials[i], self.tspan),
