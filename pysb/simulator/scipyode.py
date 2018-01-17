@@ -12,6 +12,10 @@ try:
     from sympy.printing.theanocode import theano_function
 except ImportError:
     theano = None
+try:
+    from pathos.multiprocessing import Pool
+except ImportError:
+    pathos = None
 import pysb.bng
 import sympy
 import re
@@ -23,8 +27,6 @@ import logging
 import itertools
 import contextlib
 import importlib
-from pathos.multiprocessing import Pool
-import functools
 
 
 class ScipyOdeSimulator(Simulator):
@@ -414,6 +416,8 @@ class ScipyOdeSimulator(Simulator):
                     if self.integrator.t < self.tspan[-1]:
                         trajectories[n, i:, :] = 'nan'
         else:
+            if pathos is None:
+                raise ImportError('pathos library is not installed')
             if self.integrator == 'lsoda':
                 p = Pool(processes=n_jobs)
 
