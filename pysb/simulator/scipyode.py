@@ -23,11 +23,13 @@ import numpy as np
 import warnings
 import os
 from pysb.logging import get_logger, EXTENDED_DEBUG
+from functools import partial
 import logging
 import itertools
 import contextlib
 import importlib
-
+import dill
+dill.settings['recurse'] = True
 
 class ScipyOdeSimulator(Simulator):
     """
@@ -286,7 +288,7 @@ class ScipyOdeSimulator(Simulator):
         self.opts = options
 
         # Integrator
-        if integrator == 'lsoda':
+        if integrator in ['RK45', 'RK23', 'Radau', 'BDF', 'LSODA']:
             # lsoda is accessed via scipy.integrate.odeint which,
             # as a function,
             # requires that we pass its args at the point of call. Thus we need
@@ -296,7 +298,7 @@ class ScipyOdeSimulator(Simulator):
             # lsoda's rhs and jacobian function arguments are in a different
             # order to other integrators, so we define these shims that swizzle
             # the argument order appropriately.
-            self.func = lambda t, y, p: rhs(y, t, p)
+            self.func = rhs
             if jac_fn is None:
                 self.jac_fn = None
             else:
@@ -389,14 +391,15 @@ class ScipyOdeSimulator(Simulator):
         if n_jobs == 1:
             for n in range(n_sims):
                 self._logger.info('Running simulation %d of %d', n + 1, n_sims)
-                if self.integrator == 'lsoda':
-                    trajectories[n] = scipy.integrate.odeint(
-                        self.func,
-                        self.initials[n],
-                        self.tspan,
-                        Dfun=self.jac_fn,
-                        args=(self.param_values[n],),
-                        **self.opts)
+                if self.integrator in ['RK45', 'RK23', 'Radau', 'BDF', 'LSODA']:
+                    trajectory = scipy.integrate.solve_ivp(fun=partial(self.func, p=self.param_values[n]),
+                                                                t_span=(self.tspan[0], self.tspan[-1]),
+                                                                y0=self.initials[n],
+                                                                t_eval=self.tspan,
+                                                                method=self.integrator,
+                                                                **self.opts)
+                    trajectories[n] = trajectory.y.T
+
                 else:
                     self.integrator.set_initial_value(self.initials[n],
                                                       self.tspan[0])
@@ -418,22 +421,21 @@ class ScipyOdeSimulator(Simulator):
         else:
             if Pool is None:
                 raise ImportError('pathos library is not installed')
-            if self.integrator == 'lsoda':
+            if self.integrator in ['RK45', 'RK23', 'Radau', 'BDF', 'LSODA']:
                 p = Pool(processes=n_jobs)
 
                 def worker(*args, **kwargs):
-                    func, y0, t = args
-                    Dfun, args = kwargs.values()
-                    trajectory = scipy.integrate.odeint(func, y0, t, Dfun=Dfun, args=args, **self.opts)
+                    func, t, y0, p = args
+                    trajectory = scipy.integrate.solve_ivp(fun=partial(func, p=p), t_span=(t[0], t[-1]), y0=y0,
+                                                           t_eval=t, method=self.integrator, **kwargs)
                     return trajectory
-
-                results = [p.apply_async(worker, (self.func, self.initials[i], self.tspan),
-                                         {'Dfun': self.jac_fn, 'args': (self.param_values[i],)}) for i in range(n_sims)]
+                results = [p.apply_async(worker, (self.func, self.tspan, self.initials[i], self.param_values[i]),
+                                         self.opts) for i in range(n_sims)]
                 p.close()
                 p.join()
-                trajectories = [tr.get() for tr in results]
+                trajectories = [tr.get().y.T for tr in results]
             else:
-                raise Exception('Multiprocessing can only by used with LSODA')
+                raise Exception('Multiprocessing can not be used with that integrator')
 
         tout = np.array([self.tspan]*n_sims)
         self._logger.info('All simulation(s) complete')
