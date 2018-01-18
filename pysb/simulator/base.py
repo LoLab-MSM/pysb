@@ -495,7 +495,7 @@ class Simulator(object):
         self._run_params = None
 
     @abstractmethod
-    def run(self, tspan=None, initials=None, param_values=None, n_jobs=1,
+    def run(self, tspan=None, initials=None, param_values=None,
             _run_kwargs=None):
         """Run a simulation.
 

@@ -79,13 +79,13 @@ class TestScipySimulatorSingle(TestScipySimulatorBase):
     def test_lsoda_solver_run(self):
         """Test lsoda."""
         solver_lsoda = ScipyOdeSimulator(self.model, tspan=self.time,
-                                         integrator='lsoda')
+                                         integrator='LSODA')
         solver_lsoda.run()
 
     def test_lsoda_jac_solver_run(self):
         """Test lsoda and analytic jacobian."""
         solver_lsoda_jac = ScipyOdeSimulator(self.model, tspan=self.time,
-                                             integrator='lsoda',
+                                             integrator='LSODA',
                                              use_analytic_jacobian=True)
         solver_lsoda_jac.run()
 
@@ -229,6 +229,7 @@ class TestScipySimulatorMultiple(TestScipySimulatorBase):
                         [90, 100, 110, 5, 6]]
         import pysb.bng
         pysb.bng.generate_equations(self.sim.model)
+
         simres = self.sim.run(initials=initials, param_values=param_values)
         assert np.allclose(simres.species[0][0], initials[0])
         assert np.allclose(simres.species[1][0], initials[1])
@@ -299,6 +300,46 @@ class TestScipySimulatorMultiple(TestScipySimulatorBase):
                         [90, 100, 110, 5, 6],
                         [90, 100, 110, 5, 6]]
         self.sim.run(initials=initials, param_values=param_values)
+
+
+class TestScipySimulatorMultipleMultiprocessing(TestScipySimulatorBase):
+    def test_initials_and_param_values_two_lists(self):
+        initials = [[10, 20, 30], [50, 60, 70]]
+        param_values = [[55, 65, 75, 0, 0],
+                        [90, 100, 110, 5, 6]]
+        import pysb.bng
+        pysb.bng.generate_equations(self.sim.model)
+        self.sim = ScipyOdeSimulator(self.model, tspan=self.time,
+                                     integrator='LSODA')
+        simres = self.sim.run(initials=initials, param_values=param_values, num_processors=2)
+        assert np.allclose(simres.species[0][0], initials[0])
+        assert np.allclose(simres.species[1][0], initials[1])
+
+        assert np.allclose(simres.param_values[0], param_values[0])
+        assert np.allclose(simres.param_values[1], param_values[1])
+
+        assert simres.nsims == 2
+
+        # Check the methods underlying these properties work
+        df = simres.dataframe
+        all = simres.all
+
+        # Try overriding above lists of initials/params with dicts
+        self.sim.initials = initials
+        self.sim.param_values = param_values
+        simres = self.sim.run(
+            initials={self.mon('A')(a=None): [103, 104]},
+            param_values={'ksynthA': [101, 102]})
+        # Simulator initials and params should not persist run() overrides
+        assert np.allclose(self.sim.initials, initials)
+        assert np.allclose(self.sim.param_values, param_values)
+        # Create the expected initials/params arrays and compare to result
+        initials = np.array(initials)
+        initials[:, 0] = [103, 104]
+        param_values = np.array(param_values)
+        param_values[:, 0] = [101, 102]
+        assert np.allclose(simres.initials, initials)
+        assert np.allclose(simres.param_values, param_values)
 
 
 @with_model
@@ -375,7 +416,7 @@ def test_simulation_no_tspan():
     ScipyOdeSimulator(robertson.model).run()
 
 
-@raises(UserWarning)
+@raises(ValueError)
 def test_nonexistent_integrator():
     """Ensure nonexistent integrator raises."""
     ScipyOdeSimulator(robertson.model, tspan=np.linspace(0, 1, 2),

@@ -31,13 +31,17 @@ import itertools
 import contextlib
 import importlib
 
+_AVAILABLE_INTEGRATORS_IVP = ('RK45', 'RK23', 'Radau', 'BDF', 'LSODA')
+_AVAILABLE_INTEGRATORS_ODE = ('vode', 'zvode', 'dopri5', 'dop853')
 
 class ScipyOdeSimulator(Simulator):
     """
     Simulate a model using SciPy ODE integration
 
-    Uses :func:`scipy.integrate.odeint` for the ``lsoda`` integrator,
-    :func:`scipy.integrate.ode` for all other integrators.
+    Uses :func:`scipy.integrate.solve_ivp` for the
+    ``('RK45', 'RK23', 'Radau', 'BDF', 'LSODA')`` integrators,
+    :func:`scipy.integrate.ode` for
+    ``('vode', 'zvode', 'dopri5', 'dop853')`` integrators.
 
     .. warning::
         The interface for this class is considered experimental and may
@@ -73,10 +77,11 @@ class ScipyOdeSimulator(Simulator):
         Extra keyword arguments, including:
 
         * ``integrator``: Choice of integrator, including ``vode`` (default),
-          ``zvode``, ``lsoda``, ``dopri5`` and ``dop853``. See
-          :func:`scipy.integrate.ode` for further information.
+          ``zvode``, ``dopri5``, ``dop853``,
+          ``LSODA``, ``RK45``, ``RK23``, ``Radau``, ``BDF``. See
+          :func:`scipy.integrate.ode` and :func:`scipy.integrate.solve_ivp` for further information.
         * ``integrator_options``: A dictionary of keyword arguments to
-          supply to the integrator. See :func:`scipy.integrate.ode`.
+          supply to the integrator. See :func:`scipy.integrate.ode` and :func:`scipy.integrate.solve_ivp`.
         * ``cleanup``: Boolean, `cleanup` argument used for
           :func:`pysb.bng.generate_equations` call
 
@@ -123,8 +128,8 @@ class ScipyOdeSimulator(Simulator):
             'method': 'bdf',
             'iteration': 'newton',
         },
-        'lsoda': {
-            'mxstep': 2**31-1,
+        'LSODA': {
+            'max_step': 2**31-1,
         }
     }
 
@@ -289,7 +294,7 @@ class ScipyOdeSimulator(Simulator):
         self.opts = options
 
         # Integrator
-        if integrator in ['RK45', 'RK23', 'Radau', 'BDF', 'LSODA']:
+        if integrator in _AVAILABLE_INTEGRATORS_IVP:
             # lsoda is accessed via scipy.integrate.odeint which,
             # as a function,
             # requires that we pass its args at the point of call. Thus we need
@@ -303,16 +308,17 @@ class ScipyOdeSimulator(Simulator):
             if jac_fn is None:
                 self.jac_fn = None
             else:
-                self.jac_fn = lambda t, y, p: jac_fn(y, t, p)
-        else:
+                self.jac_fn = jac_fn
+        elif integrator in _AVAILABLE_INTEGRATORS_ODE:
             # The scipy.integrate.ode integrators on the other hand are object
             # oriented and hold the functions and such internally. Once we set
             # up the integrator object we only need to retain a reference to it
             # and can forget about the other bits.
             self.integrator = scipy.integrate.ode(rhs, jac=jac_fn)
-            with warnings.catch_warnings():
-                warnings.filterwarnings('error', 'No integrator name match')
-                self.integrator.set_integrator(integrator, **options)
+            self.integrator.set_integrator(integrator, **options)
+        else:
+            raise ValueError('Integrator {0} not supported. Available integrators: {1}'
+                             .format(integrator, _AVAILABLE_INTEGRATORS_ODE + _AVAILABLE_INTEGRATORS_IVP))
 
     @property
     def _patch_distutils_logging(self):
@@ -360,7 +366,7 @@ class ScipyOdeSimulator(Simulator):
             eqns = re.sub(r'\b(%s)\b' % p.name, 'p[%d]' % i, eqns)
         return eqns
 
-    def run(self, tspan=None, initials=None, param_values=None, n_jobs=1):
+    def run(self, tspan=None, initials=None, param_values=None, num_processors=1):
         """
         Run a simulation and returns the result (trajectories)
 
@@ -374,6 +380,8 @@ class ScipyOdeSimulator(Simulator):
         tspan
         initials
         param_values
+        num_processors : int
+            Number of CPU cores for Solver to use (default: 1)
             See parameter definitions in :class:`ScipyOdeSimulator`.
 
         Returns
@@ -383,22 +391,24 @@ class ScipyOdeSimulator(Simulator):
         super(ScipyOdeSimulator, self).run(tspan=tspan,
                                            initials=initials,
                                            param_values=param_values,
-                                           n_jobs=n_jobs,
                                            _run_kwargs=[])
         n_sims = len(self.param_values)
         trajectories = np.ndarray((n_sims, len(self.tspan),
                               len(self._model.species)))
 
-        if n_jobs == 1:
+        if num_processors == 1:
             for n in range(n_sims):
                 self._logger.info('Running simulation %d of %d', n + 1, n_sims)
-                if self.integrator in ['RK45', 'RK23', 'Radau', 'BDF', 'LSODA']:
+                if self.integrator in _AVAILABLE_INTEGRATORS_IVP:
+                    if self.jac_fn:
+                        jac = partial(self.jac_fn, p=self.param_values[n])
+                        self.opts.update(jac=jac)
                     trajectory = scipy.integrate.solve_ivp(fun=partial(self.func, p=self.param_values[n]),
-                                                                t_span=(self.tspan[0], self.tspan[-1]),
-                                                                y0=self.initials[n],
-                                                                t_eval=self.tspan,
-                                                                method=self.integrator,
-                                                                **self.opts)
+                                                           t_span=(self.tspan[0], self.tspan[-1]),
+                                                           y0=self.initials[n],
+                                                           t_eval=self.tspan,
+                                                           method=self.integrator,
+                                                           **self.opts)
                     trajectories[n] = trajectory.y.T
 
                 else:
@@ -422,16 +432,21 @@ class ScipyOdeSimulator(Simulator):
         else:
             if Pool is None:
                 raise ImportError('pathos library is not installed')
-            if self.integrator in ['RK45', 'RK23', 'Radau', 'BDF', 'LSODA']:
-                p = Pool(processes=n_jobs)
+            if self.jac_fn:
+                raise NotImplementedError('Multiprocessing cannot be used with jacobian')
+            if self.integrator in _AVAILABLE_INTEGRATORS_IVP:
+                p = Pool(processes=num_processors)
 
                 def worker(*args, **kwargs):
                     func, t, y0, p = args
-                    trajectory = scipy.integrate.solve_ivp(fun=partial(func, p=p), t_span=(t[0], t[-1]), y0=y0,
+                    tj = scipy.integrate.solve_ivp(fun=partial(func, p=p), t_span=(t[0], t[-1]), y0=y0,
                                                            t_eval=t, method=self.integrator, **kwargs)
-                    return trajectory
-                results = [p.apply_async(worker, (self.func, self.tspan, self.initials[i], self.param_values[i]),
-                                         self.opts) for i in range(n_sims)]
+                    return tj
+
+                results = [0] * n_sims
+                for i in range(n_sims):
+                    results[i] = p.apply_async(worker, (self.func, self.tspan, self.initials[i],
+                                                          self.param_values[i]), self.opts)
                 p.close()
                 p.join()
                 trajectories = [tr.get().y.T for tr in results]

@@ -57,12 +57,12 @@ class TestSolver(object):
 
     def test_lsoda_solver_run(self):
         """Test lsoda."""
-        solver_lsoda = Solver(self.model, self.time, integrator='lsoda')
+        solver_lsoda = Solver(self.model, self.time, integrator='LSODA')
         solver_lsoda.run()
 
     def test_lsoda_jac_solver_run(self):
         """Test lsoda and analytic jacobian."""
-        solver_lsoda_jac = Solver(self.model, self.time, integrator='lsoda',
+        solver_lsoda_jac = Solver(self.model, self.time, integrator='LSODA',
                                   use_analytic_jacobian=True)
         solver_lsoda_jac.run()
 
@@ -154,7 +154,7 @@ def test_run_ssa():
     run_ssa(robertson.model, t_end=20000, n_steps=100, verbose=False)
 
 
-@raises(UserWarning)
+@raises(ValueError)
 def test_nonexistent_integrator():
     """Ensure nonexistent integrator raises."""
     Solver(robertson.model, np.linspace(0, 1, 2), integrator='does_not_exist')
