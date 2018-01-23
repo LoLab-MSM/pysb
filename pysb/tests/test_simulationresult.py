@@ -14,7 +14,7 @@ def test_simres_dataframe():
     tspan2 = np.linspace(50, 100, 50)
     tspan3 = np.linspace(100, 150, 100)
     model = tyson_oscillator.model
-    sim = ScipyOdeSimulator(model, integrator='BDF')
+    sim = ScipyOdeSimulator(model, integrator='lsoda')
     simres1 = sim.run(tspan=tspan1)
     # Check retrieving a single simulation dataframe
     df_single = simres1.dataframe
@@ -25,7 +25,7 @@ def test_simres_dataframe():
     trajectories3 = sim.run(tspan=tspan3).species
 
     # Try a simulation result with two different tspan lengths
-    sim = ScipyOdeSimulator(model, param_values={'k6' : [1.,1.]}, integrator='BDF')
+    sim = ScipyOdeSimulator(model, param_values={'k6' : [1.,1.]}, integrator='lsoda')
     simres = SimulationResult(sim, [tspan1, tspan2], [trajectories1, trajectories2])
     df = simres.dataframe
 
@@ -47,10 +47,10 @@ def test_save_load():
     model = tyson_oscillator.model
     test_unicode_name = u'Hello \u2603 and \U0001f4a9!'
     model.name = test_unicode_name
-    sim = ScipyOdeSimulator(model, integrator='BDF')
+    sim = ScipyOdeSimulator(model, integrator='lsoda')
     simres = sim.run(tspan=tspan, param_values={'k6': 1.0})
 
-    sim_rob = ScipyOdeSimulator(robertson.model, integrator='LSODA')
+    sim_rob = ScipyOdeSimulator(robertson.model, integrator='lsoda')
     simres_rob = sim_rob.run(tspan=tspan)
 
     # Reset equations from any previous network generation
@@ -142,7 +142,7 @@ def _check_resultsets_equal(res1, res2):
         pass
     assert np.allclose(res1.tout, res2.tout)
     assert np.allclose(res1.param_values, res2.param_values)
-    
+
     if isinstance(res1.initials, np.ndarray):
         assert np.allclose(res1.initials, res2.initials)
     else:

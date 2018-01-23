@@ -154,7 +154,7 @@ def test_run_ssa():
     run_ssa(robertson.model, t_end=20000, n_steps=100, verbose=False)
 
 
-@raises(ValueError)
+@raises(UserWarning)
 def test_nonexistent_integrator():
     """Ensure nonexistent integrator raises."""
     Solver(robertson.model, np.linspace(0, 1, 2), integrator='does_not_exist')

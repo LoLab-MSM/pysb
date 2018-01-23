@@ -310,7 +310,7 @@ class TestScipySimulatorMultipleMultiprocessing(TestScipySimulatorBase):
         import pysb.bng
         pysb.bng.generate_equations(self.sim.model)
         self.sim = ScipyOdeSimulator(self.model, tspan=self.time,
-                                     integrator='LSODA')
+                                     integrator='lsoda')
         simres = self.sim.run(initials=initials, param_values=param_values, num_processors=2)
         assert np.allclose(simres.species[0][0], initials[0])
         assert np.allclose(simres.species[1][0], initials[1])
@@ -416,7 +416,7 @@ def test_simulation_no_tspan():
     ScipyOdeSimulator(robertson.model).run()
 
 
-@raises(ValueError)
+@raises(UserWarning)
 def test_nonexistent_integrator():
     """Ensure nonexistent integrator raises."""
     ScipyOdeSimulator(robertson.model, tspan=np.linspace(0, 1, 2),

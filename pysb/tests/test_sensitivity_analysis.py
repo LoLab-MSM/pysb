@@ -20,9 +20,10 @@ class TestSensitivityAnalysis(object):
         self.model = model
         self.solver = ScipyOdeSimulator(self.model,
                                         tspan=self.tspan,
-                                        integrator='BDF',
+                                        integrator='lsoda',
                                         integrator_options={'rtol': 1e-8,
-                                                            'atol': 1e-8})
+                                                            'atol': 1e-8,
+                                                            'mxstep': 20000})
         self.sens = InitialsSensitivity(
             solver=self.solver,
             values_to_sample=self.vals,
@@ -123,9 +124,10 @@ class TestSensitivityAnalysis(object):
         vals = [.8, .9, 1.1, 1.2, 1.3]
         solver = ScipyOdeSimulator(self.model,
                                    tspan=self.tspan,
-                                   integrator='BDF',
+                                   integrator='lsoda',
                                    integrator_options={'rtol': 1e-8,
-                                                       'atol': 1e-8})
+                                                       'atol': 1e-8,
+                                                       'mxstep': 20000})
         sens = InitialsSensitivity(
             values_to_sample=vals,
             objective_function=self.obj_func_cell_cycle,

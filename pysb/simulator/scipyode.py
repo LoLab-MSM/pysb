@@ -25,23 +25,18 @@ import numpy as np
 import warnings
 import os
 from pysb.logging import get_logger, EXTENDED_DEBUG
-from functools import partial
 import logging
 import itertools
 import contextlib
 import importlib
 
-_AVAILABLE_INTEGRATORS_IVP = ('RK45', 'RK23', 'Radau', 'BDF', 'LSODA')
-_AVAILABLE_INTEGRATORS_ODE = ('vode', 'zvode', 'dopri5', 'dop853')
 
 class ScipyOdeSimulator(Simulator):
     """
     Simulate a model using SciPy ODE integration
 
-    Uses :func:`scipy.integrate.solve_ivp` for the
-    ``('RK45', 'RK23', 'Radau', 'BDF', 'LSODA')`` integrators,
-    :func:`scipy.integrate.ode` for
-    ``('vode', 'zvode', 'dopri5', 'dop853')`` integrators.
+    Uses :func:`scipy.integrate.odeint` for the ``lsoda`` integrator,
+    :func:`scipy.integrate.ode` for all other integrators.
 
     .. warning::
         The interface for this class is considered experimental and may
@@ -77,11 +72,10 @@ class ScipyOdeSimulator(Simulator):
         Extra keyword arguments, including:
 
         * ``integrator``: Choice of integrator, including ``vode`` (default),
-          ``zvode``, ``dopri5``, ``dop853``,
-          ``LSODA``, ``RK45``, ``RK23``, ``Radau``, ``BDF``. See
-          :func:`scipy.integrate.ode` and :func:`scipy.integrate.solve_ivp` for further information.
+          ``zvode``, ``lsoda``, ``dopri5`` and ``dop853``. See
+          :func:`scipy.integrate.ode` for further information.
         * ``integrator_options``: A dictionary of keyword arguments to
-          supply to the integrator. See :func:`scipy.integrate.ode` and :func:`scipy.integrate.solve_ivp`.
+          supply to the integrator. See :func:`scipy.integrate.ode`.
         * ``cleanup``: Boolean, `cleanup` argument used for
           :func:`pysb.bng.generate_equations` call
 
@@ -128,8 +122,8 @@ class ScipyOdeSimulator(Simulator):
             'method': 'bdf',
             'iteration': 'newton',
         },
-        'LSODA': {
-            'max_step': 2**31-1,
+        'lsoda': {
+            'mxstep': 2**31-1,
         }
     }
 
@@ -294,7 +288,7 @@ class ScipyOdeSimulator(Simulator):
         self.opts = options
 
         # Integrator
-        if integrator in _AVAILABLE_INTEGRATORS_IVP:
+        if integrator == 'lsoda':
             # lsoda is accessed via scipy.integrate.odeint which,
             # as a function,
             # requires that we pass its args at the point of call. Thus we need
@@ -304,21 +298,20 @@ class ScipyOdeSimulator(Simulator):
             # lsoda's rhs and jacobian function arguments are in a different
             # order to other integrators, so we define these shims that swizzle
             # the argument order appropriately.
-            self.func = rhs
+            self.func = lambda t, y, p: rhs(y, t, p)
             if jac_fn is None:
                 self.jac_fn = None
             else:
-                self.jac_fn = jac_fn
-        elif integrator in _AVAILABLE_INTEGRATORS_ODE:
+                self.jac_fn = lambda t, y, p: jac_fn(y, t, p)
+        else:
             # The scipy.integrate.ode integrators on the other hand are object
             # oriented and hold the functions and such internally. Once we set
             # up the integrator object we only need to retain a reference to it
             # and can forget about the other bits.
             self.integrator = scipy.integrate.ode(rhs, jac=jac_fn)
-            self.integrator.set_integrator(integrator, **options)
-        else:
-            raise ValueError('Integrator {0} not supported. Available integrators: {1}'
-                             .format(integrator, _AVAILABLE_INTEGRATORS_ODE + _AVAILABLE_INTEGRATORS_IVP))
+            with warnings.catch_warnings():
+                warnings.filterwarnings('error', 'No integrator name match')
+                self.integrator.set_integrator(integrator, **options)
 
     @property
     def _patch_distutils_logging(self):
@@ -380,8 +373,6 @@ class ScipyOdeSimulator(Simulator):
         tspan
         initials
         param_values
-        num_processors : int
-            Number of CPU cores for Solver to use (default: 1)
             See parameter definitions in :class:`ScipyOdeSimulator`.
 
         Returns
@@ -399,18 +390,14 @@ class ScipyOdeSimulator(Simulator):
         if num_processors == 1:
             for n in range(n_sims):
                 self._logger.info('Running simulation %d of %d', n + 1, n_sims)
-                if self.integrator in _AVAILABLE_INTEGRATORS_IVP:
-                    if self.jac_fn:
-                        jac = partial(self.jac_fn, p=self.param_values[n])
-                        self.opts.update(jac=jac)
-                    trajectory = scipy.integrate.solve_ivp(fun=partial(self.func, p=self.param_values[n]),
-                                                           t_span=(self.tspan[0], self.tspan[-1]),
-                                                           y0=self.initials[n],
-                                                           t_eval=self.tspan,
-                                                           method=self.integrator,
-                                                           **self.opts)
-                    trajectories[n] = trajectory.y.T
-
+                if self.integrator == 'lsoda':
+                    trajectories[n] = scipy.integrate.odeint(
+                        self.func,
+                        self.initials[n],
+                        self.tspan,
+                        Dfun=self.jac_fn,
+                        args=(self.param_values[n],),
+                        **self.opts)
                 else:
                     self.integrator.set_initial_value(self.initials[n],
                                                       self.tspan[0])
@@ -432,26 +419,18 @@ class ScipyOdeSimulator(Simulator):
         else:
             if Pool is None:
                 raise ImportError('pathos library is not installed')
-            if self.jac_fn:
-                raise NotImplementedError('Multiprocessing cannot be used with jacobian')
-            if self.integrator in _AVAILABLE_INTEGRATORS_IVP:
+            if self.integrator == 'lsoda':
                 p = Pool(processes=num_processors)
 
-                def worker(*args, **kwargs):
-                    func, t, y0, p = args
-                    tj = scipy.integrate.solve_ivp(fun=partial(func, p=p), t_span=(t[0], t[-1]), y0=y0,
-                                                           t_eval=t, method=self.integrator, **kwargs)
-                    return tj
-
-                results = [0] * n_sims
-                for i in range(n_sims):
-                    results[i] = p.apply_async(worker, (self.func, self.tspan, self.initials[i],
-                                                          self.param_values[i]), self.opts)
+                results = [p.apply_async(scipy.integrate.odeint,
+                                         (self.func, self.initials[i], self.tspan,
+                                          (self.param_values[i],), self.jac_fn), self.opts)
+                           for i in range(n_sims)]
                 p.close()
                 p.join()
-                trajectories = [tr.get().y.T for tr in results]
+                trajectories = [tr.get() for tr in results]
             else:
-                raise Exception('Multiprocessing can not be used with that integrator')
+                raise Exception('Multiprocessing can only by used with lsoda')
 
         tout = np.array([self.tspan]*n_sims)
         self._logger.info('All simulation(s) complete')
