@@ -18,7 +18,7 @@ from collections.abc import Sequence
 import pysb.pathfinder as pf
 import tokenize
 from pysb.logging import get_logger, EXTENDED_DEBUG
-from sympy.logic.boolalg import BooleanTrue, BooleanFalse, BooleanAtom
+from sympy.logic import boolalg
 try:
     from cStringIO import StringIO
 except ImportError:
@@ -934,7 +934,7 @@ def _convert_tokens(tokens, local_dict, global_dict):
 
 
 def _is_bool_expr(e):
-    return isinstance(e, sympy.boolalg.Boolean) and not \
+    return isinstance(e, boolalg.Boolean) and not \
         isinstance(e, sympy.AtomicExpr)
 
 
