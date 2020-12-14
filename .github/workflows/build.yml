@@ -23,7 +23,8 @@ jobs:
       shell: bash -l {0}
       if: matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest'
       run: |
-        conda install --yes -c conda-forge numpy scipy matplotlib sympy nose h5py pexpect pandas networkx pydot codecov mock cython
+        conda install --yes -c conda-forge numpy scipy matplotlib sympy nose \
+        h5py pexpect pandas networkx pydot codecov mock cython
     - name: Install extra dependencies for python 3.7 and 3.6 in macos and ubuntu
       shell: bash -l {0}
       if : (matrix.python-version == 3.6 || matrix.python-version == 3.7) && (matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest')
@@ -46,8 +47,8 @@ jobs:
       shell: bash -l {0}
       if: matrix.os == 'windows-latest'
       run: |
-        conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy
-            networkx nose h5py pandas mkl pydot mock cython
+        conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy \
+        networkx nose h5py pandas mkl pydot mock cython
         conda install -c SBMLTeam python-libsbml
         conda install -c alubbock graphviz bionetgen atomizer kappa stochkit-lite
     - name: Install pysb
