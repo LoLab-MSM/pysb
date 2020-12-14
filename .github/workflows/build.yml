@@ -48,7 +48,7 @@ jobs:
       if: matrix.os == 'windows-latest'
       run: |
         conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy \
-        networkx nose h5py pandas mkl pydot mock cython
+        networkx nose h5py pandas mkl pydot mock cython twine
         conda install -c SBMLTeam python-libsbml
         conda install -c alubbock graphviz bionetgen atomizer kappa stochkit-lite
     - name: Install pysb
