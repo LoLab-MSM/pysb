@@ -18,32 +18,44 @@ jobs:
       with:
         auto-update-conda: true
         python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
+  # Installing dependencies in macos and ubuntu
+    - name: Install dependencies for macos and ubuntu
       shell: bash -l {0}
+      if: matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest'
       run: |
         conda install --yes -c conda-forge numpy scipy matplotlib sympy nose h5py pexpect pandas networkx pydot codecov mock cython
-    - name: Install extra dependencies for python 3.7 and 3.6
+    - name: Install extra dependencies for python 3.7 and 3.6 in macos and ubuntu
       shell: bash -l {0}
-      if : matrix.python-version == 3.6 || matrix.python-version == 3.7
+      if : (matrix.python-version == 3.6 || matrix.python-version == 3.7) && (matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest')
       run: |
         conda install --yes -c SBMLTeam python-libsbml
         pip install libroadrunner twine
-    - name: Install extra dependencies for python 3.8
+    - name: Install extra dependencies for python 3.8 in macos and ubuntu
       shell: bash -l {0}
-      if : matrix.python-version == 3.8
+      if : matrix.python-version == 3.8 && (matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest')
       run: |
         pip install python-libsbml
         pip install twine
-    - name: Install BioNetGen, Kappa, StochKit and Atomizer
+    - name: Install BioNetGen, Kappa, StochKit and Atomizer in macos and ubuntu
       shell: bash -l {0}
+      if: matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest'
       run: |
         conda install --yes -c alubbock kappa stochkit bionetgen atomizer
-    - name: Install and test pysb
+  # Installing dependencies in windows
+    - name: Install dependencies for windows
+      shell: bash -l {0}
+      if: matrix.os == 'windows-latest'
+      run: |
+        conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy
+            networkx nose h5py pandas mkl pydot mock cython
+        conda install -c SBMLTeam python-libsbml
+        conda install -c alubbock graphviz bionetgen atomizer kappa stochkit-lite
+    - name: Install pysb
       shell: bash -l {0}
       run: |
         python setup.py build --build-lib=build/lib
         python setup.py sdist && twine check dist/*
-        nosetests build/lib/pysb --with-coverage --cover-inclusive --cover-package=build/lib/pysb -a '!gpu'
+        nosetests build/lib/pysb --with-coverage --cover-inclusive --cover-xml --cover-package=build/lib/pysb -a '!gpu'
     - uses: codecov/codecov-action@v1
       with:
         verbose: true # optional (default = false)
