@@ -44,3 +44,6 @@ jobs:
         python setup.py build --build-lib=build/lib
         python setup.py sdist && twine check dist/*
         nosetests build/lib/pysb --with-coverage --cover-inclusive --cover-package=build/lib/pysb -a '!gpu'
+    - uses: codecov/codecov-action@v1
+      with:
+        verbose: true # optional (default = false)
