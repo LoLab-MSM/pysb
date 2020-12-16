@@ -8,7 +8,7 @@ jobs:
     strategy:
       max-parallel: 4
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [windows-latest]
         python-version: [3.6, 3.7, 3.8]
 
     steps:
@@ -47,11 +47,12 @@ jobs:
       shell: bash -l {0}
       if: matrix.os == 'windows-latest'
       run: |
+        conda install -c anaconda "vs2015_runtime=14.16.27012"
         conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy \
         networkx nose h5py pandas mkl pydot mock cython twine
         conda install -c SBMLTeam python-libsbml
         conda install -c alubbock graphviz bionetgen atomizer kappa stochkit-lite
-    - name: Install pysb
+    - name: Install and test pysb
       shell: bash -l {0}
       run: |
         python setup.py build --build-lib=build/lib
