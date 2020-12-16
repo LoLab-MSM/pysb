@@ -18,6 +18,8 @@ jobs:
       with:
         auto-update-conda: true
         python-version: ${{ matrix.python-version }}
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v3
   # Installing dependencies in macos and ubuntu
     - name: Install dependencies for macos and ubuntu
       shell: bash -l {0}
