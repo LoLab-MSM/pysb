@@ -24,24 +24,24 @@ jobs:
       if: matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest'
       run: |
         conda install --yes -c conda-forge numpy scipy matplotlib sympy nose \
-        h5py pexpect pandas networkx pydot codecov mock cython
-    - name: Install extra dependencies for python 3.7 and 3.6 in macos and ubuntu
-      shell: bash -l {0}
-      if : (matrix.python-version == 3.6 || matrix.python-version == 3.7) && (matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest')
-      run: |
-        conda install --yes -c SBMLTeam python-libsbml
-        pip install libroadrunner twine
-    - name: Install extra dependencies for python 3.8 in macos and ubuntu
-      shell: bash -l {0}
-      if : matrix.python-version == 3.8 && (matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest')
-      run: |
-        pip install python-libsbml
-        pip install twine
+        h5py pexpect pandas networkx pydot codecov mock cython twine
     - name: Install BioNetGen, Kappa, StochKit and Atomizer in macos and ubuntu
       shell: bash -l {0}
       if: matrix.os == 'macos-latest' || matrix.os == 'ubuntu-latest'
       run: |
         conda install --yes -c alubbock kappa stochkit bionetgen atomizer
+  # Installing extra dependencies for all OS
+    - name: Install extra dependencies for python 3.7 and 3.6 in macos, ubuntu and windows
+      shell: bash -l {0}
+      if : matrix.python-version == 3.6 || matrix.python-version == 3.7
+      run: |
+        conda install --yes -c SBMLTeam python-libsbml
+        pip install libroadrunner
+    - name: Install extra dependencies for python 3.8 in macos, ubuntu and windows
+      shell: bash -l {0}
+      if : matrix.python-version == 3.8
+      run: |
+        pip install python-libsbml
   # Installing dependencies in windows
     - name: Install dependencies for windows
       shell: bash -l {0}
@@ -50,13 +50,16 @@ jobs:
         conda install -c anaconda "vs2015_runtime=14.16.27012"
         conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy \
         networkx nose h5py pandas mkl pydot mock cython twine codecov
-        conda install -c SBMLTeam python-libsbml
         conda install -c alubbock graphviz bionetgen atomizer kappa stochkit-lite
-    - name: Install and test pysb
+    - name: Install pysb
       shell: bash -l {0}
       run: |
         python setup.py build --build-lib=build/lib
         python setup.py sdist && twine check dist/*
+        nosetests build/lib/pysb --with-coverage --cover-inclusive --cover-xml --cover-package=build/lib/pysb -a '!gpu'
+    - name: Test pysb
+      shell: bash -l {0}
+      run: |
         nosetests build/lib/pysb --with-coverage --cover-inclusive --cover-xml --cover-package=build/lib/pysb -a '!gpu'
     - uses: codecov/codecov-action@v1
       with:
