@@ -47,7 +47,7 @@ jobs:
       shell: bash -l {0}
       if: matrix.os == 'windows-latest'
       run: |
-        conda install -c conda-forge vc vs2015_runtime vs2017_
+        conda install -c anaconda vc vs2015_runtime vs2017_win-64
         conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy \
         networkx nose h5py pandas mkl pydot mock cython twine codecov
         conda install -c alubbock graphviz bionetgen atomizer kappa stochkit-lite
