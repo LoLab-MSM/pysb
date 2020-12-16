@@ -49,7 +49,7 @@ jobs:
       run: |
         conda install -c anaconda "vs2015_runtime=14.16.27012"
         conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy \
-        networkx nose h5py pandas mkl pydot mock cython twine
+        networkx nose h5py pandas mkl pydot mock cython twine codecov
         conda install -c SBMLTeam python-libsbml
         conda install -c alubbock graphviz bionetgen atomizer kappa stochkit-lite
     - name: Install and test pysb
