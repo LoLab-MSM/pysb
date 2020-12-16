@@ -114,10 +114,20 @@ def sbml_translator(input_file,
 
     logger.debug("sbmlTranslator command: " + " ".join(sbmltrans_args))
 
-    p = subprocess.Popen(sbmltrans_args,
-                         cwd=os.getcwd(),
-                         stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE)
+    try:
+        p = subprocess.Popen(sbmltrans_args,
+                             cwd=os.getcwd(),
+                             stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+    except OSError:
+        import errno
+        import sys
+        e = sys.exc_info()[1]
+        if e.errno == errno.EACCES:
+            logger.fatal('ERROR: The executable could not be run: %s' % (e))
+            sys.exit(100)
+        else:
+            raise Exception('The executable %s could not be run: %s' % (sbmltrans_args, e))
 
     if logger.getEffectiveLevel() <= EXTENDED_DEBUG:
         output = "\n".join([line for line in iter(p.stdout.readline, b'')])
