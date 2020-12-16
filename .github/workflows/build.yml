@@ -59,7 +59,7 @@ jobs:
     - name: Test pysb
       shell: bash -l {0}
       run: |
-        nosetests build/lib/pysb/tests/test_importers --with-coverage --cover-inclusive --cover-xml --cover-package=build/lib/pysb/tests/test_importers  -a '!gpu'
+        nosetests build/lib/pysb/tests/test_importers.py --with-coverage --cover-inclusive --cover-xml --cover-package=build/lib/pysb/tests/test_importers.py  -a '!gpu'
     - uses: codecov/codecov-action@v1
       with:
         verbose: true # optional (default = false)
