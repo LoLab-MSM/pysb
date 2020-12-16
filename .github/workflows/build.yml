@@ -47,7 +47,7 @@ jobs:
       shell: bash -l {0}
       if: matrix.os == 'windows-latest'
       run: |
-        conda install -c anaconda "vs2015_runtime=14.16.27012"
+        conda install -c conda-forge vc vs2015_runtime vs2017_
         conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy \
         networkx nose h5py pandas mkl pydot mock cython twine codecov
         conda install -c alubbock graphviz bionetgen atomizer kappa stochkit-lite
@@ -59,7 +59,7 @@ jobs:
     - name: Test pysb
       shell: bash -l {0}
       run: |
-        nosetests build/lib/pysb --with-coverage --cover-inclusive --cover-xml --cover-package=build/lib/pysb -a '!gpu'
+        nosetests build/lib/pysb/tests/test_importers --with-coverage --cover-inclusive --cover-xml --cover-package=build/lib/pysb/tests/test_importers  -a '!gpu'
     - uses: codecov/codecov-action@v1
       with:
         verbose: true # optional (default = false)
