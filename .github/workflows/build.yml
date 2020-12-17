@@ -16,7 +16,7 @@ jobs:
     - name: Setup conda
       uses: conda-incubator/setup-miniconda@v2
       with:
-        auto-update-conda: true
+        auto-update-conda: false
         python-version: ${{ matrix.python-version }}
   # Installing dependencies in macos and ubuntu
     - name: Install dependencies for macos and ubuntu
@@ -47,7 +47,6 @@ jobs:
       shell: bash -l {0}
       if: matrix.os == 'windows-latest'
       run: |
-        conda install -c anaconda vs2015_runtime
         conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy \
         networkx nose h5py pandas mkl pydot mock cython twine codecov
         conda install -c alubbock graphviz bionetgen atomizer kappa stochkit-lite
@@ -56,8 +55,8 @@ jobs:
       run: |
         python setup.py build --build-lib=build/lib
         python setup.py sdist && twine check dist/*
-    - name: Setup tmate session
-      uses: mxschmitt/action-tmate@v3
+#    - name: Setup tmate session
+#      uses: mxschmitt/action-tmate@v3
     - name: Test pysb
       shell: bash -l {0}
       run: |
