@@ -16,7 +16,7 @@ jobs:
     - name: Setup conda
       uses: conda-incubator/setup-miniconda@v2
       with:
-        auto-update-conda: false
+        auto-update-conda: true
         python-version: ${{ matrix.python-version }}
   # Installing dependencies in macos and ubuntu
     - name: Install dependencies for macos and ubuntu
@@ -48,7 +48,7 @@ jobs:
       if: matrix.os == 'windows-latest'
       run: |
         conda install -c conda-forge "numpy>=1.14" scipy matplotlib sympy \
-        networkx nose h5py pandas mkl pydot mock cython twine codecov
+        networkx nose h5py pandas mkl pydot mock cython twine codecov psutil
         conda install -c alubbock graphviz bionetgen atomizer kappa stochkit-lite
     - name: Install pysb
       shell: bash -l {0}

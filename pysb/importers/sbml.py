@@ -127,6 +127,10 @@ def sbml_translator(input_file,
             logger.fatal('ERROR: The executable could not be run: %s' % (e))
             sys.exit(100)
         else:
+            import psutil
+            p = psutil.Process(os.getpid())
+            for dll in p.memory_maps():
+                print(dll.path)
             raise Exception('The executable %s could not be run: %s' % (sbmltrans_args, e))
 
     if logger.getEffectiveLevel() <= EXTENDED_DEBUG:
