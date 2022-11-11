@@ -1,30 +1,22 @@
 from ez_setup import use_setuptools
 use_setuptools()
 from setuptools import setup
-import setuptools.command.build_py
-
 import versioneer
+import os
 
-import sys, os, subprocess, re
-
-class build_py(setuptools.command.build_py.build_py):
-    # Simplest way to use a specific list of fixers. Note use_2to3_fixers will
-    # be ignored.
-    fixer_names = ['lib2to3.fixes.fix_ne']
 
 def main():
+    this_directory = os.path.abspath(os.path.dirname(__file__))
+    with open(os.path.join(this_directory, 'README.rst'), 'r') as f:
+        long_description = f.read()
 
-    cmdclass = {'build_py': build_py}
-    cmdclass.update(versioneer.get_cmdclass())
+    cmdclass = versioneer.get_cmdclass()
 
     setup(name='pysb',
           version=versioneer.get_version(),
           description='Python Systems Biology modeling framework',
-          long_description='PySB (pronounced "Pie Ess Bee") is a framework ' + \
-              'for building rule-based mathematical models of biochemical ' + \
-              'systems. It works nicely with scientific Python libraries ' + \
-              'such as NumPy, SciPy and SymPy for model simulation and ' + \
-              'analysis.',
+          long_description=long_description,
+          long_description_content_type='text/x-rst',
           author='Jeremy Muhlich',
           author_email='jmuhlich@bitflood.org',
           url='http://pysb.org/',
@@ -33,12 +25,14 @@ def main():
                     'pysb.testing', 'pysb.tests'],
           scripts=['scripts/pysb_export'],
           # We should really specify some minimum versions here.
-          install_requires=['numpy', 'scipy', 'sympy'],
+          python_requires='>=3.6',
+          install_requires=['numpy', 'scipy>=1.1', 'sympy>=1.6', 'networkx',
+                            'futures; python_version == "2.7"'],
           setup_requires=['nose'],
           tests_require=['coverage', 'pygraphviz', 'matplotlib', 'pexpect',
-                         'pandas'],
+                         'pandas', 'h5py', 'mock', 'cython',
+                         'python-libsbml', 'libroadrunner'],
           cmdclass=cmdclass,
-          use_2to3=True,
           keywords=['systems', 'biology', 'model', 'rules'],
           classifiers=[
             'Development Status :: 5 - Production/Stable',
@@ -46,13 +40,13 @@ def main():
             'Intended Audience :: Science/Research',
             'License :: OSI Approved :: BSD License',
             'Operating System :: OS Independent',
-            'Programming Language :: Python :: 2',
             'Programming Language :: Python :: 3',
             'Topic :: Scientific/Engineering :: Bio-Informatics',
             'Topic :: Scientific/Engineering :: Chemistry',
             'Topic :: Scientific/Engineering :: Mathematics',
             ],
           )
+
 
 if __name__ == '__main__':
     main()

@@ -123,9 +123,8 @@ class Solver(object):
         y0 : vector-like, optional
             Values to use for the initial condition of all species. Ordering is
             determined by the order of model.species. If not specified, initial
-            conditions will be taken from model.initial_conditions (with
-            initial condition parameter values taken from `param_values` if
-            specified).
+            conditions will be taken from model.initials (with initial condition
+            parameter values taken from `param_values` if specified).
         """
         self._yobs_view = None
         self._yexpr_view = None
@@ -157,8 +156,8 @@ def odesolve(model, tspan, param_values=None, y0=None, integrator='vode',
     y0 : vector-like, optional
         Values to use for the initial condition of all species. Ordering is
         determined by the order of model.species. If not specified, initial
-        conditions will be taken from model.initial_conditions (with initial
-        condition parameter values taken from `param_values` if specified).
+        conditions will be taken from model.initials (with initial condition
+        parameter values taken from `param_values` if specified).
     integrator : string, optional
         Name of the integrator to use, taken from the list of integrators known
         to :py:class:`scipy.integrate.ode`.
@@ -215,15 +214,15 @@ def odesolve(model, tspan, param_values=None, y0=None, integrator='vode',
     >>> numpy.set_printoptions(precision=4)
     >>> yfull = odesolve(model, linspace(0, 40, 10))
     >>> print(yfull['A_total'])            #doctest: +NORMALIZE_WHITESPACE
-    [ 1.      0.899   0.8506  0.8179  0.793   0.7728  0.7557  0.7408  0.7277
+    [1.      0.899   0.8506  0.8179  0.793   0.7728  0.7557  0.7408  0.7277
     0.7158]
 
     Obtain a view on a returned record array which uses an atomic data-type and
     integer indexing (note that the view's data buffer is shared with the
     original array so there is no extra memory cost):
 
-    >>> print(yfull.shape)
-    (10,)
+    >>> yfull.shape == (10, )
+    True
     >>> print(yfull.dtype)                 #doctest: +NORMALIZE_WHITESPACE
     [('__s0', '<f8'), ('__s1', '<f8'), ('__s2', '<f8'), ('A_total', '<f8'),
     ('B_total', '<f8'), ('C_total', '<f8')]
@@ -232,15 +231,15 @@ def odesolve(model, tspan, param_values=None, y0=None, integrator='vode',
       ...
     IndexError: too many indices...
     >>> yarray = yfull.view(float).reshape(len(yfull), -1)
-    >>> print(yarray.shape)
-    (10, 6)
+    >>> yarray.shape == (10, 6)
+    True
     >>> print(yarray.dtype)
     float64
-    >>> print(yarray[0:4, 1:3])
-    [[  0.0000e+00   0.0000e+00]
-     [  2.1672e-05   1.0093e-01]
-     [  1.6980e-05   1.4943e-01]
-     [  1.4502e-05   1.8209e-01]]
+    >>> print(yarray[0:4, 1:3])            #doctest: +NORMALIZE_WHITESPACE
+    [[0.0000e+00   0.0000e+00]
+     [2.1672e-05   1.0093e-01]
+     [1.6980e-05   1.4943e-01]
+     [1.4502e-05   1.8209e-01]]
 
     """
     integrator_options['integrator'] = integrator
@@ -248,14 +247,3 @@ def odesolve(model, tspan, param_values=None, y0=None, integrator='vode',
                             verbose=verbose, **integrator_options)
     simres = sim.run(param_values=param_values, initials=y0)
     return simres.all
-
-
-def setup_module(module):
-    """Doctest fixture for nose."""
-    # Distutils' temp directory creation code has a more-or-less unsuppressable
-    # print to stdout which will break the doctest which triggers it (via
-    # scipy.weave.inline). So here we run an end-to-end test of the inlining
-    # system to get that print out of the way at a point where it won't matter.
-    # As a bonus, the test harness is suppressing writes to stdout at this time
-    # anyway so the message is just swallowed silently.
-    ScipyOdeSimulator._test_inline()

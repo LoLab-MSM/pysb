@@ -23,18 +23,15 @@ Note that some PDF viewers will auto-reload a changed PDF, so you may not even
 need to manually reopen it every time you rerun the tool.
 """
 
-from __future__ import print_function
 import sys
 import os
 import re
-import pygraphviz
+try:
+    import pygraphviz
+except ImportError:
+    pygraphviz = None
 import pysb.bng
 
-# Alias basestring under Python 3 for forwards compatibility
-try:
-    basestring
-except NameError:
-    basestring = str
 
 def run(model):
     """
@@ -56,6 +53,9 @@ def run(model):
 
 
 def render_species_as_dot(species_list, graph_name=""):
+    if pygraphviz is None:
+        raise ImportError('pygraphviz library is required to run this '
+                          'function')
     graph = pygraphviz.AGraph(name="%s species" % graph_name, rankdir="LR",
                               fontname='Arial')
     graph.edge_attr.update(fontname='Arial', fontsize=8)
@@ -78,7 +78,7 @@ def render_species_as_dot(species_list, graph_name=""):
             for site in mp.monomer.sites:
                 site_state = None
                 cond = mp.site_conditions[site]
-                if isinstance(cond, basestring):
+                if isinstance(cond, str):
                     site_state = cond
                 elif isinstance(cond, tuple):
                     site_state = cond[0]

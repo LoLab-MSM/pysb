@@ -11,8 +11,6 @@ specified in one of three ways:
   runtime
 """
 
-from __future__ import print_function as _
-import pysb
 import pysb.pathfinder as pf
 from pysb.generator.kappa import KappaGenerator
 import os
@@ -23,11 +21,10 @@ import tempfile
 import shutil
 import warnings
 from collections import namedtuple
+from pysb.util import read_dot
+import pysb.logging
 
-try:
-    from future_builtins import zip
-except ImportError:
-    pass
+logger = pysb.logging.get_logger(__name__)
 
 
 def set_kappa_path(path):
@@ -67,17 +64,24 @@ def run_simulation(model, time=10000, points=200, cleanup=True,
                    perturbation=None, seed=None, verbose=False):
     """Runs the given model using KaSim and returns the parsed results.
 
+    .. deprecated:: 1.10
+
+    Use :func:`pysb.simulator.KappaSimulator` instead
+
     Parameters
     ----------
     model : pysb.core.Model
         The model to simulate/analyze using KaSim.
     time : number
         The amount of time (in arbitrary units) to run a simulation.
-        Identical to the -t argument when using KaSim at the command line.
+        Identical to the -u time -l argument when using KaSim at the command
+        line.
         Default value is 10000. If set to 0, no simulation will be run.
     points : integer
         The number of data points to collect for plotting.
-        Identical to the -p argument when using KaSim at the command line.
+        Note that this is not identical to the -p argument of KaSim when
+        called from the command line, which denotes plot period (time interval
+        between points in plot).
         Default value is 200. Note that the number of points actually returned
         by the simulator will be points + 1 (including the 0 point).
     cleanup : boolean
@@ -120,11 +124,14 @@ def run_simulation(model, time=10000, points=200, cleanup=True,
     If flux_map is True, returns an instance of SimulationResult, a namedtuple
     with two members, `timecourse` and `flux_map`. The `timecourse` field
     contains the simulation ndarray, and the `flux_map` field is an instance of
-    a pygraphviz AGraph containing the flux map. The flux map can be rendered
-    as a pdf using the dot layout program as follows::
-
-        fluxmap.draw('fluxmap.pdf', prog='dot')
+    a networkx MultiGraph containing the flux map. For details on viewing
+    the flux map graphically see :func:`run_static_analysis` (notes section).
     """
+    warnings.warn(
+        'run_simulation will be removed in a future version of PySB. '
+        'Use pysb.simulator.KappaSimulator instead.',
+        DeprecationWarning
+    )
 
     gen = KappaGenerator(model)
 
@@ -138,8 +145,12 @@ def run_simulation(model, time=10000, points=200, cleanup=True,
     fm_filename = base_filename + '_fm.dot'
     out_filename = base_filename + '.out'
 
-    args = ['-i', kappa_filename, '-t', str(time), '-p', str(points),
-            '-o', out_filename]
+    if points == 0:
+        raise ValueError('The number of data points cannot be zero.')
+    plot_period = (float(time) / points) if time > 0 else 1.0
+
+    args = ['-i', kappa_filename, '-u', 'time', '-l', str(time),
+            '-p', '%.5f' % plot_period, '-o', out_filename]
 
     if seed:
         args.extend(['-seed', str(seed)])
@@ -147,47 +158,47 @@ def run_simulation(model, time=10000, points=200, cleanup=True,
     # Generate the Kappa model code from the PySB model and write it to
     # the Kappa file:
     with open(kappa_filename, 'w') as kappa_file:
-        kappa_file.write(gen.get_content())
+        file_data = gen.get_content()
         # If desired, add instructions to the kappa file to generate the
         # flux map:
         if flux_map:
-            kappa_file.write('%%mod: [true] do $FLUX "%s" [true]\n' %
-                             fm_filename)
+            file_data += '%%mod: [true] do $DIN "%s" [true];\n' % fm_filename
+
         # If any perturbation language code has been passed in, add it to
         # the Kappa file:
         if perturbation:
-            kappa_file.write('\n%s\n' % perturbation)
+            file_data += '\n%s\n' % perturbation
+
+        logger.debug('Kappa file contents:\n\n' + file_data)
+        kappa_file.write(file_data)
 
     # Run KaSim
     kasim_path = pf.get_path('kasim')
     p = subprocess.Popen([kasim_path] + args,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         cwd=base_directory)
     if verbose:
         for line in iter(p.stdout.readline, b''):
             print('@@', line, end='')
     (p_out, p_err) = p.communicate()
 
     if p.returncode:
-        raise KasimInterfaceError(p_out + '\n' + p_err)
+        raise KasimInterfaceError(
+            p_out.decode('utf8') + '\n' + p_err.decode('utf8'))
 
     # The simulation data, as a numpy array
     data = _parse_kasim_outfile(out_filename)
 
     if flux_map:
         try:
-            import pygraphviz
-            flux_graph = pygraphviz.AGraph(fm_filename)
+            flux_graph = read_dot(fm_filename)
         except ImportError:
             if cleanup:
-                raise RuntimeError(
-                        "Couldn't import pygraphviz, which is "
-                        "required to return the flux map as a "
-                        "pygraphviz AGraph object. Either install "
-                        "pygraphviz or set cleanup=False to retain "
-                        "dot files.")
+                raise
             else:
                 warnings.warn(
-                        "pygraphviz could not be imported so no AGraph "
+                        "The pydot library could not be "
+                        "imported, so no MultiGraph "
                         "object returned (returning None); flux map "
                         "dot file available at %s" % fm_filename)
                 flux_graph = None
@@ -196,7 +207,7 @@ def run_simulation(model, time=10000, points=200, cleanup=True,
         shutil.rmtree(base_directory)
 
     # If a flux map was generated, return both the simulation output and the
-    # flux map as a pygraphviz graph
+    # flux map as a networkx multigraph
     if flux_map:
         return SimulationResult(data, flux_graph)
     # If no flux map was requested, return only the simulation data
@@ -238,9 +249,26 @@ def run_static_analysis(model, influence_map=False, contact_map=False,
     -------
     StaticAnalysisResult, a namedtuple with two fields, `contact_map` and
     `influence_map`, each containing the respective result as an instance
-    of a pygraphviz AGraph. If the either the contact_map or influence_map
+    of a networkx MultiGraph. If the either the contact_map or influence_map
     argument to the function is False, the corresponding entry in the
     StaticAnalysisResult returned by the function will be None.
+
+    Notes
+    -----
+    To view a networkx file graphically, use `draw_network`::
+
+        import networkx as nx
+        nx.draw_networkx(g, with_labels=True)
+
+    You can use `graphviz_layout` to use graphviz for layout (requires pydot
+    library)::
+
+        import networkx as nx
+        pos = nx.drawing.nx_pydot.graphviz_layout(g, prog='dot')
+        nx.draw_networkx(g, pos, with_labels=True)
+
+    For further information, see the networkx documentation on visualization:
+    https://networkx.github.io/documentation/latest/reference/drawing.html
     """
 
     # Make sure the user has asked for an output!
@@ -267,54 +295,54 @@ def run_static_analysis(model, influence_map=False, contact_map=False,
     # Contact map args:
     if contact_map:
         cm_args = ['--compute-contact-map', '--output-contact-map',
-                   os.path.basename(cm_filename)]
+                   os.path.basename(cm_filename),
+                   '--output-contact-map-directory', base_directory]
     else:
         cm_args = ['--no-compute-contact-map']
     # Influence map args:
     if influence_map:
         im_args = ['--compute-influence-map', '--output-influence-map',
-                   os.path.basename(im_filename)]
+                   os.path.basename(im_filename),
+                   '--output-influence-map-directory', base_directory]
     else:
         im_args = ['--no-compute-influence-map']
     # Full arg list
-    args = [kappa_filename, '--output-directory', base_directory] \
-            + cm_args + im_args
+    args = [kappa_filename] + cm_args + im_args
 
     # Generate the Kappa model code from the PySB model and write it to
     # the Kappa file:
     with open(kappa_filename, 'w') as kappa_file:
-        kappa_file.write(gen.get_content())
+        file_data = gen.get_content()
+        logger.debug('Kappa file contents:\n\n' + file_data)
+        kappa_file.write(file_data)
 
     # Run KaSa using the given args
     kasa_path = pf.get_path('kasa')
     p = subprocess.Popen([kasa_path] + args,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         cwd=base_directory)
     if verbose:
         for line in iter(p.stdout.readline, b''):
             print('@@', line, end='')
     (p_out, p_err) = p.communicate()
 
     if p.returncode:
-        raise KasaInterfaceError(p_out + '\n' + p_err)
+        raise KasaInterfaceError(
+            p_out.decode('utf8') + '\n' + p_err.decode('utf8'))
 
     # Try to create the graphviz objects from the .dot files created
     try:
-        import pygraphviz
         # Convert the contact map to a Graph
-        cmap = pygraphviz.AGraph(cm_filename) if contact_map else None
-        imap = pygraphviz.AGraph(im_filename) if influence_map else None
+        cmap = read_dot(cm_filename) if contact_map else None
+        imap = read_dot(im_filename) if influence_map else None
     except ImportError:
         if cleanup:
-            raise RuntimeError(
-                    "Couldn't import pygraphviz, which is "
-                    "required to return the influence and contact maps "
-                    " as pygraphviz AGraph objects. Either install "
-                    "pygraphviz or set cleanup=False to retain "
-                    "dot files.")
+            raise
         else:
             warnings.warn(
-                    "pygraphviz could not be imported so no AGraph "
-                    "objects returned (returning None); "
+                    "The pydot library could not be "
+                    "imported, so no MultiGraph "
+                    "object returned (returning None); "
                     "contact/influence maps available at %s" %
                     base_directory)
             cmap = None
@@ -340,13 +368,10 @@ def contact_map(model, **kwargs):
 
     Returns
     -------
-    pygraphviz AGraph object containing the contact map.
-    The contact map can be rendered as a pdf using the dot layout program
-    as follows::
-
-        contact_map.draw('contact_map.pdf', prog='dot')
+    networkx MultiGraph object containing the contact map. For details on
+    viewing the contact map graphically see :func:`run_static_analysis` (notes
+    section).
     """
-
     kasa_result = run_static_analysis(model, influence_map=False,
                                     contact_map=True, **kwargs)
     return kasa_result.contact_map
@@ -365,11 +390,9 @@ def influence_map(model, **kwargs):
 
     Returns
     -------
-    pygraphviz AGraph object containing the influence map.
-    The influence map can be rendered as a pdf using the dot layout program
-    as follows::
-
-        influence_map.draw('influence_map.pdf', prog='dot')
+    networkx MultiGraph object containing the influence map. For details on
+    viewing the influence map graphically see :func:`run_static_analysis`
+    (notes section).
     """
 
     kasa_result = run_static_analysis(model, influence_map=True,
@@ -399,29 +422,33 @@ def _parse_kasim_outfile(out_filename):
         simulation. Data for the observables can be accessed by indexing the
         array with the names of the observables.
     """
-
     try:
-        out_file = open(out_filename, 'r')
+        with open(out_filename, 'r') as fh:
+            for header_line in fh:
+                if header_line[0] != '#':
+                    break
 
-        line = out_file.readline().strip()  # Get the first line
-        out_file.close()
-        line = line[2:]  # strip off opening '# '
-        raw_names = re.split(' ', line)
+            # Load the output file as a numpy record array, skip the name row
+            arr = np.loadtxt(fh, dtype=float, delimiter=',')
+
+        raw_names = [term.strip() for term in re.split(',', header_line)]
         column_names = []
 
         # Get rid of the quotes surrounding the observable names
         for raw_name in raw_names:
-            mo = re.match("'(.*)'", raw_name)
-            if (mo):
-                column_names.append(mo.group(1))
+            mo = re.match('"(.*)"', raw_name)
+            if mo:
+                name = mo.group(1)
+                # Rename the time column to remain backwards compatible
+                if name == '[T]':
+                    name = 'time'
+                column_names.append(name)
             else:
                 column_names.append(raw_name)
 
         # Create the dtype argument for the numpy record array
         dt = list(zip(column_names, ('float', ) * len(column_names)))
 
-        # Load the output file as a numpy record array, skip the name row
-        arr = np.loadtxt(out_filename, dtype=float, skiprows=1)
         recarr = arr.view(dt)
     except Exception as e:
         raise Exception("problem parsing KaSim outfile: " + str(e))

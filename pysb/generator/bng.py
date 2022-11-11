@@ -1,20 +1,19 @@
 import inspect
 import warnings
 import pysb
+from pysb.core import MultiState
 import sympy
+from sympy.printing import StrPrinter
+from sympy.printing.precedence import precedence
 
-# Alias basestring under Python 3 for forwards compatibility
-try:
-    basestring
-except NameError:
-    basestring = str
 
 class BngGenerator(object):
-
-    def __init__(self, model):
+    def __init__(self, model, additional_initials=None, population_maps=None):
         self.model = model
-        if self.model.has_synth_deg():
-            self.model.enable_synth_deg()
+        if additional_initials is None:
+            additional_initials = []
+        self._additional_initials = additional_initials
+        self._population_maps = population_maps
         self.__content = None
 
     def get_content(self):
@@ -30,7 +29,9 @@ class BngGenerator(object):
         self.generate_observables()
         self.generate_functions()
         self.generate_species()
+        self.generate_energy_patterns()
         self.generate_reaction_rules()
+        self.generate_population_maps()
         self.__content += "end model\n"
 
     def generate_parameters(self):
@@ -41,7 +42,7 @@ class BngGenerator(object):
         max_length = max(len(p.name) for p in
                          self.model.parameters | self.model.expressions)
         for p in self.model.parameters:
-            self.__content += (("  %-" + str(max_length) + "s   %e\n") %
+            self.__content += (("  %-" + str(max_length) + "s   %.17g\n") %
                                (p.name, p.value))
         for e in exprs:
             self.__content += (("  %-" + str(max_length) + "s   %s\n") %
@@ -62,7 +63,7 @@ class BngGenerator(object):
             else:
                 size = c.size.name
             self.__content += ("  %s  %d  %s  %s\n") % (c.name, c.dimension, size, parent_name)
-        self.__content += "end compartments\n\n"        
+        self.__content += "end compartments\n\n"
 
     def generate_molecule_types(self):
         if not self.model.monomers:
@@ -83,28 +84,47 @@ class BngGenerator(object):
             label = r.name + ':'
             react_p = r.reactant_pattern
             prod_p = r.product_pattern
-            if r.is_synth():
-                source_mp = self.model.monomers['__source']()
-                react_p = pysb.core.as_reaction_pattern(source_mp)
-                prod_p += source_mp
-            if r.is_deg():
-                sink_mp = self.model.monomers['__sink']()
-                prod_p = pysb.core.as_reaction_pattern(sink_mp)
+            if not react_p.complex_patterns:
+                react_p = None
+            if not prod_p.complex_patterns:
+                prod_p = None
             reactants_code = format_reactionpattern(react_p)
             products_code = format_reactionpattern(prod_p)
             arrow = '->'
             if r.is_reversible:
                 arrow = '<->'
+            if not r.energy:
+                kf = r.rate_forward.name
+            else:
+                kf = 'Arrhenius(%s, %s)' % (r.rate_forward.name,
+                                            r.rate_reverse.name)
             self.__content += ("  %-" + str(max_length) + "s  %s %s %s    %s") % \
-                (label, reactants_code, arrow, products_code, r.rate_forward.name)
-            if r.is_reversible:
+                (label, reactants_code, arrow, products_code, kf)
+            self.__content += _tags_in_rate(r.rate_forward)
+            if r.is_reversible and not r.energy:
                 self.__content += ', %s' % r.rate_reverse.name
+                self.__content += _tags_in_rate(r.rate_reverse)
             if r.delete_molecules:
                 self.__content += ' DeleteMolecules'
             if r.move_connected:
                 self.__content += ' MoveConnected'
+            if r.total_rate:
+                self.__content += ' TotalRate'
             self.__content += "\n"
         self.__content += "end reaction rules\n\n"
+
+    def generate_energy_patterns(self):
+        if not self.model.energypatterns:
+            return
+        max_length = max(len(name) for name in self.model.energypatterns.keys())
+        self.__content += "begin energy patterns\n"
+        for ep in self.model.energypatterns:
+            label = ep.name + ':'
+            pattern = format_complexpattern(ep.pattern)
+            self.__content += (("  %-" + str(max_length) + "s  %s    %s")
+                               % (label, pattern, ep.energy.name))
+            self.__content += "\n"
+        self.__content += "end energy patterns\n\n"
 
     def generate_observables(self):
         if not self.model.observables:
@@ -125,22 +145,61 @@ class BngGenerator(object):
         max_length = max(len(e.name) for e in exprs) + 2
         self.__content += "begin functions\n"
         for i, e in enumerate(exprs):
-            signature = e.name + '()'
+            signature = '{}({})'.format(e.name, ','.join(sorted([sym.name for sym in e.expr.atoms(pysb.Tag)])))
             self.__content += ("  %-" + str(max_length) + "s   %s\n") % \
                 (signature, expression_to_muparser(e))
         self.__content += "end functions\n\n"
 
     def generate_species(self):
-        if not self.model.initial_conditions:
+        if not self.model.initials:
             warn_caller("Model does not contain any initial conditions")
             return
-        species_codes = [format_complexpattern(cp) for cp, param in self.model.initial_conditions]
+        species_codes = [
+            format_complexpattern(ic.pattern, ic.fixed)
+            for ic in self.model.initials
+        ]
+        for cp in self._additional_initials:
+            if not any([
+                cp.is_equivalent_to(ic.pattern) for ic in self.model.initials
+            ]):
+                species_codes.append(format_complexpattern(cp))
         max_length = max(len(code) for code in species_codes)
         self.__content += "begin species\n"
         for i, code in enumerate(species_codes):
-            param = self.model.initial_conditions[i][1]
-            self.__content += ("  %-" + str(max_length) + "s   %s\n") % (code, param.name)
+            if i < len(self.model.initials):
+                param = self.model.initials[i].value.name
+            else:
+                param = '0'
+            self.__content += ("  %-" + str(max_length) + "s   %s\n") % (code,
+                                                                         param)
         self.__content += "end species\n\n"
+
+    def generate_population_maps(self):
+        if self._population_maps is None:
+            return
+        self.__content += 'begin population maps\n'
+        cplx_pats = [format_complexpattern(pm.complex_pattern)
+                     for pm in self._population_maps]
+        str_padding = max(len(cp) for cp in cplx_pats)
+        for i in range(len(cplx_pats)):
+            cs = self._population_maps[i].counter_species
+            if cs is None:
+                cs = '__hppcounter%d()' % i
+                self._population_maps[i].counter_species = cs
+            self.__content += ('  %-' + str(str_padding) + 's -> %s\t%s\n') % \
+                              (cplx_pats[i], cs,
+                               self._population_maps[i].lumping_rate.name)
+        self.__content += 'end population maps\n\n'
+
+
+def _tags_in_rate(expr):
+    if not isinstance(expr, pysb.Expression):
+        return ''
+
+    tags = expr.tags()
+
+    return '({})'.format(', '.join([t.name for t in tags]))
+
 
 def format_monomer_site(monomer, site):
     ret = site
@@ -150,16 +209,24 @@ def format_monomer_site(monomer, site):
     return ret
 
 def format_reactionpattern(rp, for_observable=False):
+    if rp is None:
+        return '0'
     if for_observable is False:
         delimiter = ' + '
     else:
         delimiter = ' '
     return delimiter.join([format_complexpattern(cp) for cp in rp.complex_patterns])
 
-def format_complexpattern(cp):
+def format_complexpattern(cp, fixed=False):
+    if cp is None:
+        return '0'
     ret = '.'.join([format_monomerpattern(mp) for mp in cp.monomer_patterns])
+    if fixed:
+        ret = '$' + ret
     if cp.compartment is not None:
         ret = '@%s:%s' % (cp.compartment.name, ret)
+    if cp._tag:
+        ret = '%{}:{}'.format(cp._tag.name, ret)
     if cp.match_once:
         ret = '{MatchOnce}' + ret
     return ret
@@ -172,6 +239,8 @@ def format_monomerpattern(mp):
     ret = '%s(%s)' % (mp.monomer.name, site_pattern_code)
     if mp.compartment is not None:
         ret = '%s@%s' % (ret, mp.compartment.name)
+    if mp._tag:
+        ret = '{}%{}'.format(ret, mp._tag.name)
     return ret
 
 def format_site_condition(site, state):
@@ -185,7 +254,7 @@ def format_site_condition(site, state):
     elif isinstance(state, list) and all(isinstance(s, int) for s in state):
         state_code = ''.join('!%d' % s for s in state)
     # state
-    elif isinstance(state, basestring):
+    elif isinstance(state, str):
         state_code = '~' + state
     # state AND single bond
     elif isinstance(state, tuple):
@@ -195,6 +264,8 @@ def format_site_condition(site, state):
         elif state[1] == pysb.ANY:
             state = (state[0], '+')
         state_code = '~%s!%s' % state
+    elif isinstance(state, MultiState):
+        return ','.join(format_site_condition(site, s) for s in state)
     # one or more unspecified bonds
     elif state is pysb.ANY:
         state_code = '!+'
@@ -204,7 +275,8 @@ def format_site_condition(site, state):
     elif state is pysb.WILD:
         state_code = '!?'
     else:
-        raise Exception("BNG generator has encountered an unknown element in a rule pattern site condition.")
+        raise ValueError("BNG generator has encountered an unknown element in "
+                         "a rule pattern site condition.")
     return '%s%s' % (site, state_code)
 
 def warn_caller(message):
@@ -218,14 +290,82 @@ def warn_caller(message):
         module = inspect.getmodule(caller_frame)
     warnings.warn(message, stacklevel=stacklevel)
 
+
+class BngPrinter(StrPrinter):
+    def __init__(self, **settings):
+        super(BngPrinter, self).__init__(settings)
+
+    def _print_Piecewise(self, expr):
+        if expr.args[-1][1] is not sympy.true:
+            raise NotImplementedError('Piecewise statements are only '
+                                      'supported if convertible to BNG if '
+                                      'statements')
+
+        if_stmt = expr.args[-1][0]
+        for pos in range(len(expr.args) - 2, -1, -1):
+            if_stmt = 'if({},{},{})'.format(
+                self._print(expr.args[pos][1]),
+                self._print(expr.args[pos][0]),
+                self._print(if_stmt)
+            )
+
+        return if_stmt
+
+    def _print_Dummy(self, expr):
+        return expr.name
+
+    def _print_Pow(self, expr, rational=False):
+        return super(BngPrinter, self)._print_Pow(expr, rational)\
+            .replace('**', '^')
+
+    def _print_And(self, expr):
+        return super(BngPrinter, self)._print_And(expr).replace('&', '&&')
+
+    def _print_Or(self, expr):
+        return super(BngPrinter, self)._print_Or(expr).replace('|', '||')
+
+    def _print_Relational(self, expr):
+        if getattr(expr, "rel_op", None) not in {"==", "!=", "<", "<=", ">", ">="}:
+            raise NotImplementedError(
+                "Relational operator not supported: %s" % type(expr).__name__
+            )
+        # Adapted from StrPrinter._print_Relational.
+        return '%s %s %s' % (
+            self.parenthesize(expr.lhs, precedence(expr)),
+            expr.rel_op,
+            self.parenthesize(expr.rhs, precedence(expr)),
+        )
+
+    def _print_log(self, expr):
+        # BNG doesn't accept "log", only "ln".
+        return 'ln' + "(%s)" % self.stringify(expr.args, ", ")
+
+    def _print_Pi(self, expr):
+        return '_pi'
+
+    def _print_Exp1(self, expr):
+        return '_e'
+
+    def _print_floor(self, expr):
+        return 'rint({} - 0.5)'.format(self._print(expr.args[0]))
+
+    def _print_ceiling(self, expr):
+        return '(rint({} + 1) - 1)'.format(self._print(expr.args[0]))
+
+    def __make_lower(self, expr):
+        """ Print a function with its name in lower case """
+        return '{}({})'.format(
+            self._print(expr.func).lower(),
+            self._print(expr.args[0] if len(expr.args) == 1 else
+                        ', '.join([self._print(a) for a in expr.args]))
+        )
+
+    _print_Abs = __make_lower
+    _print_Min = __make_lower
+    _print_Max = __make_lower
+
+
 def expression_to_muparser(expression):
     """Render the Expression as a muparser-compatible string."""
 
-    # sympy.printing.sstr is the preferred way to render an Expression as a
-    # string (rather than, e.g., str(Expression.expr) or repr(Expression.expr).
-    # Note: "For large expressions where speed is a concern, use the setting
-    # order='none'"
-    code = sympy.printing.sstr(expression.expr, order='none')
-    code = code.replace('\n     @', '')
-    code = code.replace('**', '^')
-    return code
+    return BngPrinter(order='none').doprint(expression.expr)

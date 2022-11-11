@@ -68,7 +68,7 @@ class JacobianGenerator(object):
     def generate_variables(self):
         self.emit("VARIABLE")
         self.indent()
-        obs_names = self.model.observable_groups.keys()
+        obs_names = list(self.model.observable_groups.keys())
         for obs_group in self.make_groups(obs_names, 5):
             self.emit(', '.join(obs_group) + ' AS NOTYPE')
         var_names = ['s%d' % i for i in range(len(self.model.species))]
@@ -79,7 +79,7 @@ class JacobianGenerator(object):
     def generate_equations(self):
         self.emit("EQUATION")
         self.indent()
-        obs_names = self.model.observable_groups.keys()
+        obs_names = list(self.model.observable_groups.keys())
         obs_exprs = [' + '.join('%g * s%s' % g for g in self.model.observable_groups[name]) for name in obs_names]
         for obs in zip(obs_names, obs_exprs):
             self.emit('%s = %s;' % obs)
@@ -114,11 +114,10 @@ class JacobianGenerator(object):
         self.emit("INITIAL")
         self.indent()
         vars_unseen = set(['s%d' % i for i in range(len(self.model.species))])
-        for (pattern, param) in self.model.initial_conditions:
-            sname = 's%d' % self.model.get_species_index(pattern)
+        for ic in self.model.initials:
+            sname = 's%d' % self.model.get_species_index(ic.pattern)
             vars_unseen.remove(sname)
-            #self.emit("M.%s = M.%s;" % (sname, param.name))
-            self.emit("M.%s = %g;" % (sname, param.value))
+            self.emit("M.%s = %g;" % (sname, ic.value.value))
         for sname in sorted(vars_unseen):
             self.emit("M.%s = 0;" % sname)
         self.outdent()

@@ -43,7 +43,7 @@ subclass could be created as follows::
             k2 = self.parameter('k2', 1, prior=Uniform(-5, -1))
             A = self['A']
             B = self['B']
-            self.rule('A_B_bind', A(b=None) + B(b=None) <> A(b=1) % B(b=1),
+            self.rule('A_B_bind', A(b=None) + B(b=None) | A(b=1) % B(b=1),
                       k1, k2)
 
 This motif, implemented as a method, does several things: it manages the
@@ -172,9 +172,23 @@ class Builder(object):
         self.model.add_component(e)
         return e
 
-    def initial(self, *args):
+    def energypattern(self, *args, **kwargs):
+        """Adds an energypattern to the Builder's model instance."""
+        p = EnergyPattern(*args, _export=False, **kwargs)
+        self.model.add_component(p)
+        return p
+
+    def initial(self, *args, **kwargs):
         """Adds an initial condition to the Builder's model instance."""
-        self.model.initial(*args)
+        i = Initial(*args, _export=False, **kwargs)
+        self.model.add_initial(i)
+        return i
+
+    def tag(self, *args, **kwargs):
+        """Adds a tag to the Builder's model instance."""
+        t = Tag(*args, _export=False, **kwargs)
+        self.model.add_component(t)
+        return t
 
     def __getitem__(self, index):
         """Returns the component with the given string index

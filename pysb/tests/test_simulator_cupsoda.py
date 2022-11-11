@@ -18,10 +18,10 @@ class TestCupSODASimulatorSingle(object):
                                                            'max_steps': 20000})
         len_model_species = len(model.species)
         y0 = np.zeros((self.n_sims, len_model_species))
-        for ic in model.initial_conditions:
+        for ic in model.initials:
             for j in range(len_model_species):
-                if str(ic[0]) == str(model.species[j]):
-                    y0[:, j] = ic[1].value
+                if str(ic.pattern) == str(model.species[j]):
+                    y0[:, j] = ic.value.value
                     break
         self.y0 = y0
 
@@ -58,6 +58,16 @@ class TestCupSODASimulatorSingle(object):
         assert self.solver.n_blocks == 128
         self.solver.run(initials=self.y0)
 
+    def test_multi_chunks(self):
+        sim = CupSodaSimulator(model, tspan=self.tspan, verbose=False,
+                               initials=self.y0,
+                               integrator_options={'atol': 1e-12,
+                                                   'rtol': 1e-12,
+                                                   'chunksize': 25,
+                                                   'max_steps': 20000})
+        res = sim.run()
+        assert res.nsims == self.n_sims
+
     @raises(ValueError)
     def test_set_nblocks_str(self):
         self.solver.n_blocks = 'fail'
@@ -80,11 +90,20 @@ class TestCupSODASimulatorSingle(object):
 
     def test_verbose(self):
         solver = CupSodaSimulator(model, tspan=self.tspan, verbose=True,
-                                  vol=1e-5,
                                   integrator_options={'atol': 1e-12,
                                                       'rtol': 1e-12,
+                                                      'vol': 1e-5,
                                                       'max_steps': 20000})
         solver.run()
 
     def test_run_cupsoda_instance(self):
         run_cupsoda(model, tspan=self.tspan)
+
+    @raises(ValueError)
+    def test_invalid_init_kwarg(self):
+        CupSodaSimulator(model, tspan=self.tspan, spam='eggs')
+
+    @raises(ValueError)
+    def test_invalid_integrator_option(self):
+        CupSodaSimulator(model, tspan=self.tspan,
+                         integrator_options={'spam': 'eggs'})

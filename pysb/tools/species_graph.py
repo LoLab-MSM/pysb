@@ -27,14 +27,16 @@ need to manually reopen it every time you rerun the tool.
 
 """
 
-from __future__ import print_function
 import pysb
 import pysb.bng
-import sympy
 import re
 import sys
 import os
-import pygraphviz
+try:
+    import pygraphviz
+except ImportError:
+    pygraphviz = None
+
 
 def run(model):
     """
@@ -50,11 +52,14 @@ def run(model):
     string
         The dot format output.
     """
+    if pygraphviz is None:
+        raise ImportError('pygraphviz library is required to run this '
+                          'function')
 
     pysb.bng.generate_equations(model)
 
     graph = pygraphviz.AGraph(directed=True, rankdir="LR")
-    ic_species = [cp for cp, parameter in model.initial_conditions]
+    ic_species = [ic.pattern for ic in model.initials]
     for i, cp in enumerate(model.species):
         species_node = 's%d' % i
         slabel = re.sub(r'% ', r'%\\l', str(cp))

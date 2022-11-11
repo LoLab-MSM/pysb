@@ -1,4 +1,3 @@
-from __future__ import print_function as _
 from pysb.importers.bngl import model_from_bngl
 import pysb.pathfinder as pf
 import subprocess
@@ -6,16 +5,14 @@ import os
 import tempfile
 import shutil
 import re
-try:
-    # Python 3
-    from urllib.request import urlretrieve
-except ImportError:
-    # Python 2
-    from urllib import urlretrieve
+from urllib.request import urlretrieve
 from pysb.logging import get_logger, EXTENDED_DEBUG
 
-BIOMODELS_REGEX = re.compile(r'BIOMD[0-9]{10}')
-BIOMODELS_URL = 'http://www.ebi.ac.uk/biomodels-main/download?mid={}'
+BIOMODELS_REGEX = re.compile(r'(BIOMD|MODEL)[0-9]{10}')
+BIOMODELS_URLS = {
+    'ebi': 'http://www.ebi.ac.uk/biomodels-main/download?mid={}',
+    'caltech': 'http://biomodels.caltech.edu/download?mid={}'
+}
 
 
 class SbmlTranslationError(Exception):
@@ -35,7 +32,10 @@ def sbml_translator(input_file,
     Run the BioNetGen sbmlTranslator binary to convert SBML to BNGL
 
     This function runs the external program sbmlTranslator, included with
-    BioNetGen, which converts SBML files to BioNetGen language (BNGL).
+    BioNetGen, which converts SBML files to BioNetGen language (BNGL). If
+    PySB was installed using "conda", you can install sbmlTranslator using
+    "conda install -c alubbock atomizer". sbmlTranslator is bundled with
+    BioNetGen if BNG is installed by manual download and unzip.
 
     Generally, PySB users don't need to run this function directly; an SBML
     model can be imported to PySB in a single step with
@@ -81,8 +81,8 @@ def sbml_translator(input_file,
         BNGL output filename
     """
     logger = get_logger(__name__, log_level=verbose)
-    sbmltrans_bin = os.path.join(os.path.dirname(pf.get_path('bng')),
-                                 'bin/sbmlTranslator')
+    sbmltrans_bin = pf.get_path('atomizer')
+
     sbmltrans_args = [sbmltrans_bin, '-i', input_file]
     if output_file is None:
         output_file = os.path.splitext(input_file)[0] + '.bngl'
@@ -139,6 +139,11 @@ def model_from_sbml(filename, force=False, cleanup=True, **kwargs):
     Notes
     -----
 
+    Requires the sbmlTranslator program (also known at Atomizer). If
+    PySB was installed using "conda", you can install sbmlTranslator using
+    "conda install -c alubbock atomizer". It is bundled with BioNetGen if
+    BNG is installed by manual download and unzip.
+
     Read the `sbmlTranslator documentation
     <http://bionetgen.org/index.php/SBML2BNGL>`_ for further information on
     sbmlTranslator's limitations.
@@ -172,7 +177,8 @@ def model_from_sbml(filename, force=False, cleanup=True, **kwargs):
             shutil.rmtree(tmpdir)
 
 
-def model_from_biomodels(accession_no, force=False, cleanup=True, **kwargs):
+def model_from_biomodels(accession_no, force=False, cleanup=True,
+                         mirror='ebi', **kwargs):
     """
     Create a PySB Model based on a BioModels SBML model
 
@@ -183,6 +189,11 @@ def model_from_biomodels(accession_no, force=False, cleanup=True, **kwargs):
 
     Notes
     -----
+
+    Requires the sbmlTranslator program (also known at Atomizer). If
+    PySB was installed using "conda", you can install sbmlTranslator using
+    "conda install -c alubbock atomizer". It is bundled with BioNetGen if
+    BNG is installed by manual download and unzip.
 
     Read the `sbmlTranslator documentation
     <http://bionetgen.org/index.php/SBML2BNGL>`_ for further information on
@@ -204,6 +215,8 @@ def model_from_biomodels(accession_no, force=False, cleanup=True, **kwargs):
     cleanup : bool
         Delete temporary directory on completion if True. Set to False for
         debugging purposes.
+    mirror : str
+        Which BioModels mirror to use, either 'ebi' or 'caltech'
     **kwargs: kwargs
         Keyword arguments to pass on to :func:`sbml_translator`
 
@@ -211,8 +224,8 @@ def model_from_biomodels(accession_no, force=False, cleanup=True, **kwargs):
     --------
 
     >>> from pysb.importers.sbml import model_from_biomodels
-    >>> model = model_from_biomodels('1')
-    >>> print(model) #doctest: +ELLIPSIS
+    >>> model = model_from_biomodels('1')           #doctest: +SKIP
+    >>> print(model)                                #doctest: +SKIP
     <Model 'pysb' (monomers: 12, rules: 17, parameters: 37, expressions: 0, ...
     """
     logger = get_logger(__name__, log_level=kwargs.get('verbose'))
@@ -223,7 +236,7 @@ def model_from_biomodels(accession_no, force=False, cleanup=True, **kwargs):
             raise ValueError('accession_no must be an integer or a BioModels '
                              'accession number (BIOMDxxxxxxxxxx)')
     logger.info('Importing model {} to PySB'.format(accession_no))
-    filename, headers = urlretrieve(BIOMODELS_URL.format(accession_no))
+    filename = _download_biomodels(accession_no, mirror=mirror)
     try:
         return model_from_sbml(filename, force=force, cleanup=cleanup,
                                **kwargs)
@@ -232,3 +245,13 @@ def model_from_biomodels(accession_no, force=False, cleanup=True, **kwargs):
             os.remove(filename)
         except OSError:
             pass
+
+
+def _download_biomodels(accession_no, mirror):
+    try:
+        url_fmt = BIOMODELS_URLS[mirror]
+    except KeyError:
+        raise ValueError('Unknown Biomodels mirror: "{}". Choices are: {}'
+                         .format(mirror, BIOMODELS_URLS.keys()))
+    filename, _ = urlretrieve(url_fmt.format(accession_no))
+    return filename

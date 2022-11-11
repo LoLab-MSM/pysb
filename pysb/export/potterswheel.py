@@ -63,13 +63,10 @@ import pysb
 import pysb.bng
 import sympy
 import re
-import sys
-import os
-try:
-    from cStringIO import StringIO
-except ImportError:
-    from io import StringIO
-from pysb.export import Exporter
+from io import StringIO
+from pysb.export import Exporter, ExpressionsNotSupported, \
+    CompartmentsNotSupported
+
 
 class PottersWheelExporter(Exporter):
     """A class for returning the PottersWheel equivalent for a given PySB model.
@@ -87,6 +84,10 @@ class PottersWheelExporter(Exporter):
         string
             String containing the PottersWheel code for the ODEs.
         """
+        if self.model.expressions:
+            raise ExpressionsNotSupported()
+        if self.model.compartments:
+            raise CompartmentsNotSupported()
 
         output = StringIO()
         pysb.bng.generate_equations(self.model)
@@ -94,15 +95,15 @@ class PottersWheelExporter(Exporter):
         model_name = self.model.name.replace('.', '_')
 
         ic_values = [0] * len(self.model.odes)
-        for cp, ic_param in self.model.initial_conditions:
-            ic_values[self.model.get_species_index(cp)] = ic_param.value
+        for ic in self.model.initials:
+            ic_values[self.model.get_species_index(ic.pattern)] = ic.value.value
 
         # list of "dynamic variables"
-        pw_x = ["m = pwAddX(m, 's%d', %e);" % (i, ic_values[i])
+        pw_x = ["m = pwAddX(m, 's%d', %.17g);" % (i, ic_values[i])
                 for i in range(len(self.model.odes))]
 
         # parameters
-        pw_k = ["m = pwAddK(m, '%s', %e);" % (p.name, p.value)
+        pw_k = ["m = pwAddK(m, '%s', %.17g);" % (p.name, p.value)
                 for p in self.model.parameters]
 
         # equations (one for each dynamic variable)

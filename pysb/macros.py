@@ -33,13 +33,12 @@ pattern, which can be harder for the caller to debug.
 """
 
 
-import inspect
 from pysb import *
-import pysb.core
-from pysb.core import ComponentSet, as_reaction_pattern, as_complex_pattern, MonomerPattern, ComplexPattern
+from pysb.core import ComponentSet, as_complex_pattern, MonomerPattern, ComplexPattern
 import numbers
 import functools
 import itertools
+from sympy import Piecewise
 
 __all__ = ['equilibrate',
            'bind', 'bind_table',
@@ -47,7 +46,7 @@ __all__ = ['equilibrate',
            'catalyze_one_step', 'catalyze_one_step_reversible',
            'synthesize', 'degrade', 'synthesize_degrade_table',
            'assemble_pore_sequential', 'pore_transport', 'pore_bind', 'assemble_chain_sequential_base',
-           'bind_complex', 'bind_table_complex']
+           'bind_complex', 'bind_table_complex', 'drug_binding']
 
 # Suppress ModelExistsWarnings in our doctests.
 _pysb_doctest_suppress_modelexistswarning = True
@@ -58,6 +57,8 @@ _pysb_doctest_suppress_modelexistswarning = True
 
 def _complex_pattern_label(cp):
     """Return a string label for a ComplexPattern."""
+    if cp is None:
+        return ''
     mp_labels = [_monomer_pattern_label(mp) for mp in cp.monomer_patterns]
     return ''.join(mp_labels)
 
@@ -139,16 +140,16 @@ def _macro_rule(rule_prefix, rule_expression, klist, ksuffixes,
         >>> from pysb.macros import _macro_rule
         >>> 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('A', ['s'])
         Monomer('A', ['s'])
         >>> Monomer('B', ['s'])
         Monomer('B', ['s'])
         >>> 
-        >>> _macro_rule('bind', A(s=None) + B(s=None) <> A(s=1) % B(s=1),
+        >>> _macro_rule('bind', A(s=None) + B(s=None) | A(s=1) % B(s=1),
         ... [1e6, 1e-1], ['kf', 'kr']) # doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
-         Rule('bind_A_B_to_AB', A(s=None) + B(s=None) <> A(s=1) % B(s=1),
+         Rule('bind_A_B_to_AB', A(s=None) + B(s=None) | A(s=1) % B(s=1),
              bind_A_B_to_AB_kf, bind_A_B_to_AB_kr),
          Parameter('bind_A_B_to_AB_kf', 1000000.0),
          Parameter('bind_A_B_to_AB_kr', 0.1),
@@ -295,14 +296,14 @@ def equilibrate(s1, s2, klist):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('A')
         Monomer('A')
         >>> Monomer('B')
         Monomer('B')
         >>> equilibrate(A(), B(), [1, 1]) # doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
-         Rule('equilibrate_A_to_B', A() <> B(), equilibrate_A_to_B_kf, equilibrate_A_to_B_kr),
+         Rule('equilibrate_A_to_B', A() | B(), equilibrate_A_to_B_kf, equilibrate_A_to_B_kr),
          Parameter('equilibrate_A_to_B_kf', 1.0),
          Parameter('equilibrate_A_to_B_kr', 1.0),
          ])
@@ -310,14 +311,14 @@ def equilibrate(s1, s2, klist):
     """
     
     # turn any Monomers into MonomerPatterns
-    return _macro_rule('equilibrate', s1 <> s2, klist, ['kf', 'kr'])
+    return _macro_rule('equilibrate', s1 | s2, klist, ['kf', 'kr'])
 
 # Binding
 # =======
 
 def bind(s1, site1, s2, site2, klist):
     """
-    Generate the reversible binding reaction S1 + S2 <> S1:S2.
+    Generate the reversible binding reaction S1 + S2 | S1:S2.
 
     Parameters
     ----------
@@ -350,14 +351,14 @@ def bind(s1, site1, s2, site2, klist):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('A', ['x'])
         Monomer('A', ['x'])
         >>> Monomer('B', ['y'])
         Monomer('B', ['y'])
         >>> bind(A, 'x', B, 'y', [1e-4, 1e-1]) # doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
-         Rule('bind_A_B', A(x=None) + B(y=None) <> A(x=1) % B(y=1), bind_A_B_kf, bind_A_B_kr),
+         Rule('bind_A_B', A(x=None) + B(y=None) | A(x=1) % B(y=1), bind_A_B_kf, bind_A_B_kr),
          Parameter('bind_A_B_kf', 0.0001),
          Parameter('bind_A_B_kr', 0.1),
          ])
@@ -367,7 +368,7 @@ def bind(s1, site1, s2, site2, klist):
     _verify_sites(s1, site1)
     _verify_sites(s2, site2)
     return _macro_rule('bind',
-                       s1(**{site1: None}) + s2(**{site2: None}) <>
+                       s1(**{site1: None}) + s2(**{site2: None}) |
                        s1(**{site1: 1}) % s2(**{site2: 1}),
                        klist, ['kf', 'kr'], name_func=bind_name_func)
 
@@ -380,10 +381,10 @@ def bind_name_func(rule_expression):
 
 def bind_complex(s1, site1, s2, site2, klist, m1=None, m2=None):
     """
-    Generate the reversible binding reaction ``S1 + S2 <> S1:S2``,
+    Generate the reversible binding reaction ``S1 + S2 | S1:S2``,
     with optional complexes attached to either
-    ``S1`` (``C1:S1 + S2 <> C1:S1:S2``), ``S2`` (``S1 + C2:S2 <> C2:S2:S1``),
-    or both (``C1:S1 + C2:S2 <> C1:S1:S2:C2``).
+    ``S1`` (``C1:S1 + S2 | C1:S1:S2``), ``S2`` (``S1 + C2:S2 | C2:S2:S1``),
+    or both (``C1:S1 + C2:S2 | C1:S1:S2:C2``).
 
     Parameters
     ----------
@@ -426,7 +427,7 @@ def bind_complex(s1, site1, s2, site2, klist, m1=None, m2=None):
             1e-1]) #doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
         Rule('bind_AB_DC', A(a=1, b=None) % B(c=1) + D(g=3, h=None) % C(e=3)
-          <> A(a=1, b=50) % B(c=1) % D(g=3, h=50) % C(e=3), bind_AB_DC_kf,
+          | A(a=1, b=50) % B(c=1) % D(g=3, h=50) % C(e=3), bind_AB_DC_kf,
           bind_AB_DC_kr),
         Parameter('bind_AB_DC_kf', 0.0001),
         Parameter('bind_AB_DC_kr', 0.1),
@@ -447,7 +448,7 @@ def bind_complex(s1, site1, s2, site2, klist, m1=None, m2=None):
         >>> bind(A, 'a', B, 'c', [1e4, 1e-1]) #doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
         Rule('bind_A_B',
-          A(a=None) + B(c=None) <> A(a=1) % B(c=1),
+          A(a=None) + B(c=None) | A(a=1) % B(c=1),
           bind_A_B_kf, bind_A_B_kr),
         Parameter('bind_A_B_kf', 10000.0),
         Parameter('bind_A_B_kr', 0.1),
@@ -455,7 +456,7 @@ def bind_complex(s1, site1, s2, site2, klist, m1=None, m2=None):
         >>> bind(C, 'e', D, 'g', [1e4, 1e-1]) #doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
         Rule('bind_C_D',
-          C(e=None) + D(g=None) <> C(e=1) % D(g=1),
+          C(e=None) + D(g=None) | C(e=1) % D(g=1),
           bind_C_D_kf, bind_C_D_kr),
         Parameter('bind_C_D_kf', 10000.0),
         Parameter('bind_C_D_kr', 0.1),
@@ -464,7 +465,7 @@ def bind_complex(s1, site1, s2, site2, klist, m1=None, m2=None):
             1e-1]) #doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
         Rule('bind_AB_DC',
-          A(a=1, b=None) % B(c=1) + D(g=3, h=None) % C(e=3) <> A(a=1,
+          A(a=1, b=None) % B(c=1) + D(g=3, h=None) % C(e=3) | A(a=1,
           b=50) % B(c=1) % D(g=3, h=50) % C(e=3),
           bind_AB_DC_kf, bind_AB_DC_kr),
         Parameter('bind_AB_DC_kf', 0.0001),
@@ -534,7 +535,7 @@ def bind_complex(s1, site1, s2, site2, klist, m1=None, m2=None):
     #Create rules.
     def create_rule(s1ub, s1b, s2ub, s2b):
         return _macro_rule('bind',
-                            s1ub + s2ub <>
+                            s1ub + s2ub |
                             s1b % s2b,
                             klist, ['kf', 'kr'], name_func=bind_name_func)
 
@@ -574,7 +575,7 @@ def bind_complex(s1, site1, s2, site2, klist, m1=None, m2=None):
                         maxint = stateint
         match = 'N'
         for monomer in s2.monomer_patterns:
-            if m2 != None:
+            if m2 is not None:
                 if m2.site_conditions == monomer.site_conditions and m2.monomer.name == monomer.monomer.name:
                     match = 'Y'
             for site, stateint in monomer.site_conditions.items():
@@ -654,7 +655,7 @@ def bind_table(bindtable, row_site, col_site, kf=None):
     Execution:: 
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('R1', ['x'])
         Monomer('R1', ['x'])
         >>> Monomer('R2', ['x'])
@@ -668,15 +669,15 @@ def bind_table(bindtable, row_site, col_site, kf=None):
         ...             [R2,  (3e-4, 3e-1),         None]],
         ...            'x', 'y') # doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
-         Rule('bind_R1_C1', R1(x=None) + C1(y=None) <> R1(x=1) % C1(y=1),
+         Rule('bind_R1_C1', R1(x=None) + C1(y=None) | R1(x=1) % C1(y=1),
              bind_R1_C1_kf, bind_R1_C1_kr),
          Parameter('bind_R1_C1_kf', 0.0001),
          Parameter('bind_R1_C1_kr', 0.1),
-         Rule('bind_R1_C2', R1(x=None) + C2(y=None) <> R1(x=1) % C2(y=1),
+         Rule('bind_R1_C2', R1(x=None) + C2(y=None) | R1(x=1) % C2(y=1),
              bind_R1_C2_kf, bind_R1_C2_kr),
          Parameter('bind_R1_C2_kf', 0.0002),
          Parameter('bind_R1_C2_kr', 0.2),
-         Rule('bind_R2_C1', R2(x=None) + C1(y=None) <> R2(x=1) % C1(y=1),
+         Rule('bind_R2_C1', R2(x=None) + C1(y=None) | R2(x=1) % C1(y=1),
              bind_R2_C1_kf, bind_R2_C1_kr),
          Parameter('bind_R2_C1_kf', 0.0003),
          Parameter('bind_R2_C1_kr', 0.3),
@@ -782,7 +783,7 @@ def bind_table_complex(bindtable, row_site, col_site, m1=None, m2=None, kf=None)
     Execution:: 
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('R1', ['x', 'c1'])
         Monomer('R1', ['x', 'c1'])
         >>> Monomer('R2', ['x', 'c1'])
@@ -793,13 +794,13 @@ def bind_table_complex(bindtable, row_site, col_site, m1=None, m2=None, kf=None)
         Monomer('C2', ['y', 'c2'])
         >>> bind(C1(y=None), 'c2', C1(y=None), 'c2', (1e-3, 1e-2)) #doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
-         Rule('bind_C1_C1', C1(y=None, c2=None) + C1(y=None, c2=None) <> C1(y=None, c2=1) % C1(y=None, c2=1), bind_C1_C1_kf, bind_C1_C1_kr),
+         Rule('bind_C1_C1', C1(y=None, c2=None) + C1(y=None, c2=None) | C1(y=None, c2=1) % C1(y=None, c2=1), bind_C1_C1_kf, bind_C1_C1_kr),
          Parameter('bind_C1_C1_kf', 0.001),
          Parameter('bind_C1_C1_kr', 0.01),
          ])
         >>> bind(R1(x=None), 'c1', R2(x=None), 'c1', (1e-3, 1e-2)) #doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
-         Rule('bind_R1_R2', R1(x=None, c1=None) + R2(x=None, c1=None) <> R1(x=None, c1=1) % R2(x=None, c1=1), bind_R1_R2_kf, bind_R1_R2_kr),
+         Rule('bind_R1_R2', R1(x=None, c1=None) + R2(x=None, c1=None) | R1(x=None, c1=1) % R2(x=None, c1=1), bind_R1_R2_kf, bind_R1_R2_kr),
          Parameter('bind_R1_R2_kf', 0.001),
          Parameter('bind_R1_R2_kr', 0.01),
          ])
@@ -808,13 +809,13 @@ def bind_table_complex(bindtable, row_site, col_site, m1=None, m2=None, kf=None)
         ...                       [R2,             (3e-4, 3e-1),                        None]],
         ...                       'x', 'y', m1=R1(), m2=C1(y=None, c2=1)) #doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
-        Rule('bind_R1R2_C1C1', R1(x=None) % R2() + C1(y=None, c2=1) % C1(c2=1) <> R1(x=50) % R2() % C1(y=50, c2=1) % C1(c2=1), bind_R1R2_C1C1_kf, bind_R1R2_C1C1_kr),
+        Rule('bind_R1R2_C1C1', R1(x=None) % R2() + C1(y=None, c2=1) % C1(c2=1) | R1(x=50) % R2() % C1(y=50, c2=1) % C1(c2=1), bind_R1R2_C1C1_kf, bind_R1R2_C1C1_kr),
         Parameter('bind_R1R2_C1C1_kf', 0.0001),
         Parameter('bind_R1R2_C1C1_kr', 0.1),
-        Rule('bind_R1R2_C2', R1(x=None) % R2() + C2(y=None) <> R1(x=50) % R2() % C2(y=50), bind_R1R2_C2_kf, bind_R1R2_C2_kr),
+        Rule('bind_R1R2_C2', R1(x=None) % R2() + C2(y=None) | R1(x=50) % R2() % C2(y=50), bind_R1R2_C2_kf, bind_R1R2_C2_kr),
         Parameter('bind_R1R2_C2_kf', 0.0002),
         Parameter('bind_R1R2_C2_kr', 0.2),
-        Rule('bind_C1C1_R2', C1(y=None, c2=1) % C1(c2=1) + R2(x=None) <> C1(y=50, c2=1) % C1(c2=1) % R2(x=50), bind_C1C1_R2_kf, bind_C1C1_R2_kr),
+        Rule('bind_C1C1_R2', C1(y=None, c2=1) % C1(c2=1) + R2(x=None) | C1(y=50, c2=1) % C1(c2=1) % R2(x=50), bind_C1C1_R2_kf, bind_C1C1_R2_kr),
         Parameter('bind_C1C1_R2_kf', 0.0003),
         Parameter('bind_C1C1_R2_kr', 0.3),
          ])
@@ -843,12 +844,173 @@ def bind_table_complex(bindtable, row_site, col_site, m1=None, m2=None, kf=None)
                 components |= bind_complex(s_row, row_site, s_col, col_site, klist, m1, m2)
     return components
 
+
+def create_t_obs():
+    """
+    Generate a rule to simulate passing of time and create a time observable
+    that can be used in complex Expression rates.
+
+    .. warning::
+        This macro is usually used to create rate laws that depend on time.
+        Time tracking rate laws using this macro only work for deterministic simulations.
+
+    Returns
+    -------
+    components : ComponentSet
+        The generated components. Contains the time monomer, Parameter rate of time creation,
+        Rule to simulate passing of time, ime Observable.
+
+    Examples
+    --------
+     Create rule to simulate passing of time and time observable::
+
+        Model()
+        create_t_obs()
+
+    Execution::
+
+        >>> Model() # doctest:+ELLIPSIS
+        <Model '_interactive_' ...>
+        >>> create_t_obs()
+        ComponentSet([
+         Rule('synthesize___t', None >> __t(), __k_t),
+         Monomer('__t'),
+         Parameter('__k_t', 1.0),
+         Observable('t', __t()),
+         ])
+
+
+    """
+
+    # Add a time monomer and reaction to be able to create an observable to
+    # track the time within the simulation
+    time = Monomer('__t')
+    k_time = Parameter('__k_t', 1)
+    time_obs = Observable('t', time())
+    components = synthesize(time(), k_time)
+    components |= [time, k_time, time_obs]
+    return components
+
+
+def drug_binding(drug, d_site, substrate, s_site, t_action, klist):
+    """
+    Generate the reversible binding reaction DRUG + SUBSTRATE | DRUG:SUBSTRATE
+    that only gets triggered when the simulation reaches the time point t_action.
+    The idea of this macro is to mimic experimental settings when a reaction is
+    started and later on some kind of perturbation is added to the system.
+
+    .. warning::
+        This macro only works when a model is simulated using a deterministic simulator.
+
+    Parameters
+    ----------
+    drug, substrate: Monomer or MonomerPattern
+        Monomers participating in the binding reaction.
+    d_site, s_site: string
+        The names of the sites on s1 and s2 used for binding.
+    t_action: float
+        Time of the simulation at which the drug is added
+    klist: list of 2 Parameters or list of 2 numbers
+        Forward and reverse rate constants (in that order). If Parameters are
+        passed, they will be used directly in the generated Rules. If numbers
+        are passed, Parameters will be created with automatically generated
+        names based on the names and states of S1 and S2 and these parameters
+        will be included at the end of the returned component list.
+
+    Returns
+    -------
+    components : ComponentSet
+        The generated components. Contains the bidirectional binding Rule,
+        the time monomer, Parameter rate of time creation, Rule to simulate passing of time,
+        time Observable, two Expression rates that take into account when the interaction
+        between the drug and that substrate start to occur and optionally two Parameters
+        if klist was given as numbers
+        as numbers
+
+    Examples
+    --------
+    Binding between drug and substrate::
+        Model()
+        Monomer('drug', ['b'])
+        Monomer('substrate', ['b'])
+        drug_binding(drug(), 'b', substrate(), 'b', 10, [2,4])
+
+    Execution::
+
+        >>> Model() # doctest:+ELLIPSIS
+        <Model '_interactive_' ...>
+        >>> Monomer('drug', ['b'])
+        Monomer('drug', ['b'])
+        >>> Monomer('substrate', ['b'])
+        Monomer('substrate', ['b'])
+        >>> drug_binding(drug(), 'b', substrate(), 'b', 10, [0.1, 0.01])
+        ComponentSet([
+         Rule('bind_drug_substrate_to_drugsubstrate', drug(b=None) + substrate(b=None) | drug(b=1) % substrate(b=1), kf_expr_drug_substrate, kr_expr_drug_substrate),
+         Parameter('kf_drug_substrate', 0.1),
+         Parameter('kr_drug_substrate', 0.01),
+         Rule('synthesize___t', None >> __t(), __k_t),
+         Monomer('__t'),
+         Parameter('__k_t', 1.0),
+         Observable('t', __t()),
+         Expression('kf_expr_drug_substrate', Piecewise((kf_drug_substrate, t > 10), (0, True))),
+         Expression('kr_expr_drug_substrate', Piecewise((kr_drug_substrate, t > 10), (0, True))),
+         ])
+
+    """
+    _verify_sites(drug, d_site)
+    _verify_sites(substrate, s_site)
+
+    # Create a time observable using the create_t_obs macro
+    components_time_obs = create_t_obs()
+    time_obs = components_time_obs.t
+
+    # Set up some aliases to the patterns we'll use in the rules
+    drug_free = drug({d_site: None})
+    # retain any existing state for substrate's s_site, otherwise set it to None
+    if s_site in substrate.site_conditions:
+        substrate_free = substrate()
+        s_state = (substrate.site_conditions[s_site], 1)
+    else:
+        substrate_free = substrate({s_site: None})
+        s_state = 1
+    ds_complex = drug({d_site: 1}) % substrate({s_site: s_state})
+
+    substrate_monomer_name = substrate.monomer.name
+    drug_monomer_name = drug.monomer.name
+    if all(isinstance(x, (Parameter, Expression)) for x in klist):
+        k1 = klist[0]
+        k2 = klist[1]
+        params_created = ComponentSet()
+
+    elif all(isinstance(x, numbers.Real) for x in klist):
+        k1 = Parameter('kf_{0}_{1}'.format(drug_monomer_name, substrate_monomer_name), klist[0])
+        params_created = ComponentSet([k1])
+        k2 = Parameter('kr_{0}_{1}'.format(drug_monomer_name, substrate_monomer_name), klist[1])
+        params_created.add(k2)
+    else:
+        raise ValueError("klist must contain Parameters, Expressions, or numbers.")
+
+    kf_expr = Expression('kf_expr_{0}_{1}'.format(drug_monomer_name,
+                                                  substrate_monomer_name), Piecewise((k1, time_obs > t_action), (0, True)))
+    kr_expr = Expression('kr_expr_{0}_{1}'.format(drug_monomer_name,
+                                                  substrate_monomer_name), Piecewise((k2, time_obs > t_action), (0, True)))
+    bind_kpars = [kf_expr, kr_expr]
+
+    components_added_macro = components_time_obs
+    components_added_macro |= bind_kpars
+    components = _macro_rule('bind', drug_free + substrate_free | ds_complex, bind_kpars, ['kf', 'kr'])
+    components |= params_created
+    components |= components_added_macro
+
+    return components
+
+
 # Catalysis
 # =========
 
 def catalyze(enzyme, e_site, substrate, s_site, product, klist):
     """
-    Generate the two-step catalytic reaction E + S <> E:S >> E + P.
+    Generate the two-step catalytic reaction E + S | E:S >> E + P.
 
     Parameters
     ----------
@@ -890,7 +1052,7 @@ def catalyze(enzyme, e_site, substrate, s_site, product, klist):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('E', ['b'])
         Monomer('E', ['b'])
         >>> Monomer('S', ['b'])
@@ -899,7 +1061,7 @@ def catalyze(enzyme, e_site, substrate, s_site, product, klist):
         Monomer('P')
         >>> catalyze(E(), 'b', S(), 'b', P(), (1e-4, 1e-1, 1)) # doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
-         Rule('bind_E_S_to_ES', E(b=None) + S(b=None) <> E(b=1) % S(b=1),
+         Rule('bind_E_S_to_ES', E(b=None) + S(b=None) | E(b=1) % S(b=1),
              bind_E_S_to_ES_kf, bind_E_S_to_ES_kr),
          Parameter('bind_E_S_to_ES_kf', 0.0001),
          Parameter('bind_E_S_to_ES_kr', 0.1),
@@ -918,7 +1080,7 @@ def catalyze(enzyme, e_site, substrate, s_site, product, klist):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('Kinase', ['b'])
         Monomer('Kinase', ['b'])
         >>> Monomer('Substrate', ['b', 'y'], {'y': ('U', 'P')})
@@ -926,7 +1088,7 @@ def catalyze(enzyme, e_site, substrate, s_site, product, klist):
         >>> catalyze(Kinase(), 'b', Substrate(y='U'), 'b', Substrate(y='P'), (1e-4, 1e-1, 1)) # doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
          Rule('bind_Kinase_SubstrateU_to_KinaseSubstrateU',
-             Kinase(b=None) + Substrate(b=None, y='U') <> Kinase(b=1) % Substrate(b=1, y='U'),
+             Kinase(b=None) + Substrate(b=None, y='U') | Kinase(b=1) % Substrate(b=1, y='U'),
              bind_Kinase_SubstrateU_to_KinaseSubstrateU_kf,
              bind_Kinase_SubstrateU_to_KinaseSubstrateU_kr),
          Parameter('bind_Kinase_SubstrateU_to_KinaseSubstrateU_kf', 0.0001),
@@ -962,7 +1124,7 @@ def catalyze(enzyme, e_site, substrate, s_site, product, klist):
 
     # create the rules
     components = _macro_rule('bind',
-                             enzyme_free + substrate_free <> es_complex,
+                             enzyme_free + substrate_free | es_complex,
                              klist[0:2], ['kf', 'kr'])
     components |= _macro_rule('catalyze',
                               es_complex >> enzyme_free + product,
@@ -971,9 +1133,9 @@ def catalyze(enzyme, e_site, substrate, s_site, product, klist):
     return components
 
 def catalyze_complex(enzyme, e_site, substrate, s_site, product, klist, m1=None, m2=None):
-    """ Generate the two-step catalytic reaction E + S <> E:S >> E + P, while allowing complexes to serve as enzyme, substrate and/or product.
+    """ Generate the two-step catalytic reaction E + S | E:S >> E + P, while allowing complexes to serve as enzyme, substrate and/or product.
         
-        E:S1 + S:S2 <> E:S1:S:S2 >> E:S1 + P:S2
+        E:S1 + S:S2 | E:S1:S:S2 >> E:S1 + P:S2
         
         Parameters
         ----------
@@ -1023,8 +1185,8 @@ def catalyze_complex(enzyme, e_site, substrate, s_site, product, klist, m1=None,
             #If the given binding site is only present in one monomer in the complex:
         if m1==None:
             #Build up ComplexPattern for use in rule (with state of given binding site specified).
-            s1complexpatub = specsitesdict.keys()[0]({site1:None})
-            s1complexpatb = specsitesdict.keys()[0]({site1:50})
+            s1complexpatub = list(specsitesdict.keys())[0]({site1:None})
+            s1complexpatb = list(specsitesdict.keys())[0]({site1:50})
             for monomer in s1.monomer_patterns:
                 if monomer not in specsitesdict.keys():
                     s1complexpatub %= monomer
@@ -1096,7 +1258,7 @@ def catalyze_complex(enzyme, e_site, substrate, s_site, product, klist, m1=None,
 def catalyze_state(enzyme, e_site, substrate, s_site, mod_site,
                    state1, state2, klist):
     """
-    Generate the two-step catalytic reaction E + S <> E:S >> E + P. A wrapper
+    Generate the two-step catalytic reaction E + S | E:S >> E + P. A wrapper
     around catalyze() with a signature specifying the state change of the
     substrate resulting from catalysis.
 
@@ -1151,7 +1313,7 @@ def catalyze_state(enzyme, e_site, substrate, s_site, mod_site,
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('Kinase', ['b'])
         Monomer('Kinase', ['b'])
         >>> Monomer('Substrate', ['b', 'y'], {'y': ('U', 'P')})
@@ -1159,7 +1321,7 @@ def catalyze_state(enzyme, e_site, substrate, s_site, mod_site,
         >>> catalyze_state(Kinase, 'b', Substrate, 'b', 'y', 'U', 'P', (1e-4, 1e-1, 1)) # doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
          Rule('bind_Kinase_SubstrateU_to_KinaseSubstrateU',
-             Kinase(b=None) + Substrate(b=None, y='U') <> Kinase(b=1) % Substrate(b=1, y='U'),
+             Kinase(b=None) + Substrate(b=None, y='U') | Kinase(b=1) % Substrate(b=1, y='U'),
              bind_Kinase_SubstrateU_to_KinaseSubstrateU_kf,
              bind_Kinase_SubstrateU_to_KinaseSubstrateU_kr),
          Parameter('bind_Kinase_SubstrateU_to_KinaseSubstrateU_kf', 0.0001),
@@ -1227,7 +1389,7 @@ def catalyze_one_step(enzyme, substrate, product, kf):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('E', ['b'])
         Monomer('E', ['b'])
         >>> Monomer('S', ['b'])
@@ -1296,7 +1458,7 @@ def catalyze_one_step_reversible(enzyme, substrate, product, klist):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('E', ['b'])
         Monomer('E', ['b'])
         >>> Monomer('S', ['b'])
@@ -1367,7 +1529,7 @@ def synthesize(species, ksynth):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('A', ['x', 'y'], {'y': ['e', 'f']})
         Monomer('A', ['x', 'y'], {'y': ['e', 'f']})
         >>> synthesize(A(x=None, y='e'), 1e-4) # doctest:+NORMALIZE_WHITESPACE
@@ -1427,7 +1589,7 @@ def degrade(species, kdeg):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('B', ['x'])
         Monomer('B', ['x'])
         >>> degrade(B(), 1e-6) # doctest:+NORMALIZE_WHITESPACE
@@ -1493,7 +1655,7 @@ def synthesize_degrade_table(table):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('A', ['x', 'y'], {'y': ['e', 'f']})
         Monomer('A', ['x', 'y'], {'y': ['e', 'f']})
         >>> Monomer('B', ['x'])
@@ -1635,7 +1797,7 @@ def assemble_polymer_sequential(subunit, site1, site2, max_size, ktable,
         rule_name_base = 'assemble_%s_sequential' % \
                          ('pore' if closed else 'chain')
         components |= _macro_rule(rule_name_base,
-                                  s + polymer_prev <> polymer_next,
+                                  s + polymer_prev | polymer_next,
                                   klist, ['kf', 'kr'],
                                   name_func=name_func)
     return components
@@ -1677,7 +1839,7 @@ def pore_species(subunit, site1, site2, size):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('Unit', ['p1', 'p2'])
         Monomer('Unit', ['p1', 'p2'])
         >>> pore_species(Unit, 'p1', 'p2', 4)
@@ -1730,20 +1892,20 @@ def assemble_pore_sequential(subunit, site1, site2, max_size, ktable):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('Unit', ['p1', 'p2'])
         Monomer('Unit', ['p1', 'p2'])
         >>> assemble_pore_sequential(Unit, 'p1', 'p2', 3, [[1e-4, 1e-1]] * 2) # doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
          Rule('assemble_pore_sequential_Unit_2',
-              Unit(p1=None, p2=None) + Unit(p1=None, p2=None) <>
+              Unit(p1=None, p2=None) + Unit(p1=None, p2=None) |
                   Unit(p1=None, p2=1) % Unit(p1=1, p2=None),
               assemble_pore_sequential_Unit_2_kf,
               assemble_pore_sequential_Unit_2_kr),
          Parameter('assemble_pore_sequential_Unit_2_kf', 0.0001),
          Parameter('assemble_pore_sequential_Unit_2_kr', 0.1),
          Rule('assemble_pore_sequential_Unit_3',
-              Unit(p1=None, p2=None) + Unit(p1=None, p2=1) % Unit(p1=1, p2=None) <>
+              Unit(p1=None, p2=None) + Unit(p1=None, p2=1) % Unit(p1=1, p2=None) |
                   MatchOnce(Unit(p1=3, p2=1) % Unit(p1=1, p2=2) % Unit(p1=2, p2=3)),
               assemble_pore_sequential_Unit_3_kf,
               assemble_pore_sequential_Unit_3_kr),
@@ -1763,7 +1925,7 @@ def pore_transport(subunit, sp_site1, sp_site2, sc_site, min_size, max_size,
     The pore structure is defined by the `pore_species` macro -- `subunit`
     monomers bind to each other from `sp_site1` to `sp_site2` to form a closed
     ring. The transport reaction is modeled as a catalytic process of the form
-    pore + csource <> pore:csource >> pore + cdest
+    pore + csource | pore:csource >> pore + cdest
 
     Parameters
     ----------
@@ -1815,7 +1977,7 @@ def pore_transport(subunit, sp_site1, sp_site2, sc_site, min_size, max_size,
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('Unit', ['p1', 'p2', 'sc_site'])
         Monomer('Unit', ['p1', 'p2', 'sc_site'])
         >>> Monomer('Cargo', ['c_site', 'loc'], {'loc':['mito', 'cyto']})
@@ -1828,7 +1990,7 @@ def pore_transport(subunit, sp_site1, sp_site2, sc_site, min_size, max_size,
              MatchOnce(Unit(p1=3, p2=1, sc_site=None) %
                  Unit(p1=1, p2=2, sc_site=None) %
                  Unit(p1=2, p2=3, sc_site=None)) +
-                 Cargo(c_site=None, loc='mito') <>
+                 Cargo(c_site=None, loc='mito') |
              MatchOnce(Unit(p1=3, p2=1, sc_site=4) %
                  Unit(p1=1, p2=2, sc_site=None) %
                  Unit(p1=2, p2=3, sc_site=None) %
@@ -1907,7 +2069,7 @@ def pore_transport(subunit, sp_site1, sp_site2, sc_site, min_size, max_size,
         # Create the rules (just like catalyze)
         name_func = functools.partial(pore_transport_rule_name, size=size)
         components |= _macro_rule('pore_transport_complex',
-                                  pore_free + csource_free <> pc_complex,
+                                  pore_free + csource_free | pc_complex,
                                   klist[0:2], ['kf', 'kr'],
                                   name_func=name_func)
         components |= _macro_rule('pore_transport_dissociate',
@@ -1924,7 +2086,7 @@ def pore_bind(subunit, sp_site1, sp_site2, sc_site, size, cargo, c_site,
 
     The pore structure is defined by the `pore_species` macro -- `subunit`
     monomers bind to each other from `sp_site1` to `sp_site2` to form a closed
-    ring. The binding reaction takes the form pore + cargo <> pore:cargo.
+    ring. The binding reaction takes the form pore + cargo | pore:cargo.
 
     Parameters
     ----------
@@ -1963,7 +2125,7 @@ def pore_bind(subunit, sp_site1, sp_site2, sc_site, size, cargo, c_site,
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('Unit', ['p1', 'p2', 'sc_site'])
         Monomer('Unit', ['p1', 'p2', 'sc_site'])
         >>> Monomer('Cargo', ['c_site'])
@@ -1975,7 +2137,7 @@ def pore_bind(subunit, sp_site1, sp_site2, sc_site, size, cargo, c_site,
              MatchOnce(Unit(p1=3, p2=1, sc_site=None) %
                  Unit(p1=1, p2=2, sc_site=None) %
                  Unit(p1=2, p2=3, sc_site=None)) +
-                 Cargo(c_site=None) <>
+                 Cargo(c_site=None) |
              MatchOnce(Unit(p1=3, p2=1, sc_site=4) %
                  Unit(p1=1, p2=2, sc_site=None) %
                  Unit(p1=2, p2=3, sc_site=None) %
@@ -2036,7 +2198,7 @@ def pore_bind(subunit, sp_site1, sp_site2, sc_site, size, cargo, c_site,
     # Create the rules
     name_func = functools.partial(pore_bind_rule_name, size=size)
     components |= _macro_rule('pore_bind',
-                              pore_free + cargo_free <> pc_complex,
+                              pore_free + cargo_free | pc_complex,
                               klist[0:2], ['kf', 'kr'],
                               name_func=name_func)
 
@@ -2077,7 +2239,7 @@ def chain_species(subunit, site1, site2, size):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('Unit', ['p1', 'p2'])
         Monomer('Unit', ['p1', 'p2'])
         >>> chain_species(Unit, 'p1', 'p2', 4)
@@ -2130,15 +2292,15 @@ def assemble_chain_sequential(subunit, site1, site2, max_size, ktable):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('Unit', ['p1', 'p2'])
         Monomer('Unit', ['p1', 'p2'])
         >>> assemble_chain_sequential(Unit, 'p1', 'p2', 3, [[1e-4, 1e-1]] * 2) # doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
-         Rule('assemble_chain_sequential_Unit_2', Unit(p1=None, p2=None) + Unit(p1=None, p2=None) <> Unit(p1=None, p2=1) % Unit(p1=1, p2=None), assemble_chain_sequential_Unit_2_kf, assemble_chain_sequential_Unit_2_kr),
+         Rule('assemble_chain_sequential_Unit_2', Unit(p1=None, p2=None) + Unit(p1=None, p2=None) | Unit(p1=None, p2=1) % Unit(p1=1, p2=None), assemble_chain_sequential_Unit_2_kf, assemble_chain_sequential_Unit_2_kr),
          Parameter('assemble_chain_sequential_Unit_2_kf', 0.0001),
          Parameter('assemble_chain_sequential_Unit_2_kr', 0.1),
-         Rule('assemble_chain_sequential_Unit_3', Unit(p1=None, p2=None) + Unit(p1=None, p2=1) % Unit(p1=1, p2=None) <> MatchOnce(Unit(p1=None, p2=1) % Unit(p1=1, p2=2) % Unit(p1=2, p2=None)), assemble_chain_sequential_Unit_3_kf, assemble_chain_sequential_Unit_3_kr),
+         Rule('assemble_chain_sequential_Unit_3', Unit(p1=None, p2=None) + Unit(p1=None, p2=1) % Unit(p1=1, p2=None) | MatchOnce(Unit(p1=None, p2=1) % Unit(p1=1, p2=2) % Unit(p1=2, p2=None)), assemble_chain_sequential_Unit_3_kf, assemble_chain_sequential_Unit_3_kr),
          Parameter('assemble_chain_sequential_Unit_3_kf', 0.0001),
          Parameter('assemble_chain_sequential_Unit_3_kr', 0.1),
          ])
@@ -2187,7 +2349,7 @@ def chain_species_base(base, basesite, subunit, site1, site2, size, comp=1):
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('Unit', ['p1', 'p2'])
         Monomer('Unit', ['p1', 'p2'])
         >>> Monomer('Base', ['b1', 'b2'])
@@ -2275,7 +2437,7 @@ def assemble_chain_sequential_base(base, basesite, subunit, site1, site2, max_si
     Execution::
 
         >>> Model() # doctest:+ELLIPSIS
-        <Model '_interactive_' (monomers: 0, rules: 0, parameters: 0, expressions: 0, compartments: 0) at ...>
+        <Model '_interactive_' ...>
         >>> Monomer('Base', ['b1', 'b2'])
         Monomer('Base', ['b1', 'b2'])
         >>> Monomer('Unit', ['p1', 'p2'])
@@ -2286,10 +2448,10 @@ def assemble_chain_sequential_base(base, basesite, subunit, site1, site2, max_si
         Monomer('Complex2', ['s1', 's2'])
         >>> assemble_chain_sequential_base(Base(b2=ANY), 'b1', Unit, 'p1', 'p2', 3, [[1e-4, 1e-1]] * 2, Complex1(s1=ANY) % Complex2(s1=ANY, s2=ANY)) # doctest:+NORMALIZE_WHITESPACE
         ComponentSet([
-         Rule('assemble_chain_sequential_base_Unit_2', Unit(p1=None, p2=None) + Complex1(s1=ANY) % Complex2(s1=ANY, s2=ANY) % Base(b1=1, b2=ANY) % Unit(p1=1, p2=None) <> Complex1(s1=ANY) % Complex2(s1=ANY, s2=ANY) % Base(b1=1, b2=ANY) % Unit(p1=1, p2=2) % Unit(p1=2, p2=None), assemble_chain_sequential_base_Unit_2_kf, assemble_chain_sequential_base_Unit_2_kr),
+         Rule('assemble_chain_sequential_base_Unit_2', Unit(p1=None, p2=None) + Complex1(s1=ANY) % Complex2(s1=ANY, s2=ANY) % Base(b1=1, b2=ANY) % Unit(p1=1, p2=None) | Complex1(s1=ANY) % Complex2(s1=ANY, s2=ANY) % Base(b1=1, b2=ANY) % Unit(p1=1, p2=2) % Unit(p1=2, p2=None), assemble_chain_sequential_base_Unit_2_kf, assemble_chain_sequential_base_Unit_2_kr),
          Parameter('assemble_chain_sequential_base_Unit_2_kf', 0.0001),
          Parameter('assemble_chain_sequential_base_Unit_2_kr', 0.1),
-         Rule('assemble_chain_sequential_base_Unit_3', Unit(p1=None, p2=None) + Complex1(s1=ANY) % Complex2(s1=ANY, s2=ANY) % Base(b1=1, b2=ANY) % Unit(p1=1, p2=2) % Unit(p1=2, p2=None) <> MatchOnce(Complex1(s1=ANY) % Complex2(s1=ANY, s2=ANY) % Base(b1=1, b2=ANY) % Unit(p1=1, p2=2) % Unit(p1=2, p2=3) % Unit(p1=3, p2=None)), assemble_chain_sequential_base_Unit_3_kf, assemble_chain_sequential_base_Unit_3_kr),
+         Rule('assemble_chain_sequential_base_Unit_3', Unit(p1=None, p2=None) + Complex1(s1=ANY) % Complex2(s1=ANY, s2=ANY) % Base(b1=1, b2=ANY) % Unit(p1=1, p2=2) % Unit(p1=2, p2=None) | MatchOnce(Complex1(s1=ANY) % Complex2(s1=ANY, s2=ANY) % Base(b1=1, b2=ANY) % Unit(p1=1, p2=2) % Unit(p1=2, p2=3) % Unit(p1=3, p2=None)), assemble_chain_sequential_base_Unit_3_kf, assemble_chain_sequential_base_Unit_3_kr),
          Parameter('assemble_chain_sequential_base_Unit_3_kf', 0.0001),
          Parameter('assemble_chain_sequential_base_Unit_3_kr', 0.1),
          ])
@@ -2311,7 +2473,7 @@ def assemble_chain_sequential_base(base, basesite, subunit, site1, site2, max_si
         chain_next = chain_species_base(base, basesite, subunit, site1, site2, size, comp)
         name_func = functools.partial(chain_rule_name, size=size)
         components |= _macro_rule('assemble_chain_sequential_base',
-                                  s + chain_prev <> chain_next,
+                                  s + chain_prev | chain_next,
                                   klist, ['kf', 'kr'],
                                   name_func=name_func)
 
@@ -2320,3 +2482,4 @@ def assemble_chain_sequential_base(base, basesite, subunit, site1, site2, max_si
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
+

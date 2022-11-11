@@ -149,6 +149,10 @@ the documentation for the MATLAB model, as shown in the following example for
                 observable_names = fieldnames(self.observables);
                 for i = 1:numel(observable_names)
                     obs_matrix = self.observables.(observable_names{i});
+                    if isempty(obs_matrix)
+                        y_obs.(observable_names{i}) = zeros(size(y, 1), 1);
+                        continue
+                    end
                     species = obs_matrix(1, :);
                     coefficients = obs_matrix(2, :);
                     y_obs.(observable_names{i}) = ...
@@ -163,11 +167,10 @@ import pysb
 import pysb.bng
 import sympy
 import re
-try:
-    from cStringIO import StringIO
-except ImportError:
-    from io import StringIO
-from pysb.export import Exporter, pad
+from io import StringIO
+from pysb.export import Exporter, pad, ExpressionsNotSupported, \
+    CompartmentsNotSupported
+
 
 class MatlabExporter(Exporter):
     """A class for returning the ODEs for a given PySB model for use in
@@ -186,6 +189,11 @@ class MatlabExporter(Exporter):
             String containing the MATLAB code for an implementation of the
             model's ODEs.
         """
+        if self.model.expressions:
+            raise ExpressionsNotSupported()
+        if self.model.compartments:
+            raise CompartmentsNotSupported()
+
         output = StringIO()
         pysb.bng.generate_equations(self.model)
 
@@ -220,8 +228,8 @@ class MatlabExporter(Exporter):
                              len(self.model.species)
         initial_values_str += ('\n'+' '*12).join(
                 ['initial_values(%d) = self.parameters.%s; %% %s' %
-                 (i+1, _fix_underscores(ic[1].name), ic[0])
-                 for i, ic in enumerate(self.model.initial_conditions)])
+                 (i+1, _fix_underscores(ic.value.name), ic.pattern)
+                 for i, ic in enumerate(self.model.initials)])
 
         # -- Build observables declaration --
         observables_str = 'self.observables = struct( ...\n'+' '*16
@@ -381,6 +389,10 @@ class MatlabExporter(Exporter):
                         observable_names = fieldnames(self.observables);
                         for i = 1:numel(observable_names)
                             obs_matrix = self.observables.(observable_names{i});
+                            if isempty(obs_matrix)
+                                y_obs.(observable_names{i}) = zeros(size(y, 1), 1);
+                                continue
+                            end
                             species = obs_matrix(1, :);
                             coefficients = obs_matrix(2, :);
                             y_obs.(observable_names{i}) = ...

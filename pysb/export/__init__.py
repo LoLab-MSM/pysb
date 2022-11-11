@@ -17,13 +17,14 @@ contains an instance of ``pysb.core.Model`` instantiated as a global variable).
 
 - ``bngl``
 - ``bng_net``
+- ``json``
 - ``kappa``
 - ``potterswheel``
 - ``sbml``
-- ``python``
 - ``pysb_flat``
 - ``mathematica``
 - ``matlab``
+- ``stochkit``
 
 In all cases, the exported model code will be printed to standard
 out, allowing it to be inspected or redirected to another file.
@@ -68,8 +69,9 @@ documentation for the exporter classes in the package :py:mod:`pysb.export`:
    bngl
    bng_net
    kappa
-   python
    pysb_flat
+   stochkit
+   json
 """
 
 import re
@@ -122,14 +124,44 @@ class Exporter(object):
 formats = {
         'bngl': 'BnglExporter',
         'bng_net': 'BngNetExporter',
+        'json': 'JsonExporter',
         'kappa': 'KappaExporter',
         'potterswheel': 'PottersWheelExporter',
         'sbml': 'SbmlExporter',
-        'python': 'PythonExporter',
         'pysb_flat': 'PysbFlatExporter',
         'mathematica': 'MathematicaExporter',
         'matlab': 'MatlabExporter',
+        'stochkit': 'StochKitExporter'
         }
+
+
+class ExportError(Exception):
+    pass
+
+
+class FeatureNotSupportedError(ExportError, NotImplementedError):
+    pass
+
+
+class ExpressionsNotSupported(FeatureNotSupportedError):
+    """ Expressions are not supported by this exporter """
+
+
+class CompartmentsNotSupported(FeatureNotSupportedError):
+    """ Compartments are not supported by this exporter """
+
+
+class LocalFunctionsNotSupported(FeatureNotSupportedError):
+    """ Local functions are not supported by this exporter """
+
+
+class EnergyNotSupported(FeatureNotSupportedError):
+    """ Energy features are not supported by this exporter """
+
+
+class CustomSympyFunctionsNotSupported(FeatureNotSupportedError):
+    """ Custom sympy functions are not supported by this exporter """
+
 
 def export(model, format, docstring=None):
     """Top-level function for exporting a model to a given format.

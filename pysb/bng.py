@@ -1,34 +1,25 @@
+from __future__ import absolute_import
 from __future__ import print_function as _
 import pysb.core
-from pysb.generator.bng import BngGenerator
+from pysb.generator.bng import BngGenerator, format_complexpattern
 import os
 import subprocess
 import re
 import itertools
 import sympy
+import sympy.parsing.sympy_parser as sympy_parser
 import numpy
 import tempfile
-from pkg_resources import parse_version
 import abc
 from warnings import warn
 import shutil
 import collections
+from collections.abc import Sequence
 import pysb.pathfinder as pf
-
-try:
-    from cStringIO import StringIO
-except ImportError:
-    from io import StringIO
-try:
-    from future_builtins import zip
-except ImportError:
-    pass
-
-# Alias basestring under Python 3 for forwards compatibility
-try:
-    basestring
-except NameError:
-    basestring = str
+import tokenize
+from pysb.logging import get_logger, EXTENDED_DEBUG
+from sympy.logic.boolalg import Boolean
+from io import StringIO
 
 
 def set_bng_path(dir):
@@ -50,14 +41,21 @@ class BngBaseInterface(object):
 
     @abc.abstractmethod
     def __init__(self, model=None, verbose=False, cleanup=False,
-                 output_prefix=None, output_dir=None):
+                 output_prefix=None, output_dir=None,
+                 model_additional_species=None,
+                 model_population_maps=None):
+        self._logger = get_logger(__name__,
+                                  model=model,
+                                  log_level=verbose)
         self._base_file_stem = 'pysb'
-        self.verbose = verbose
         self.cleanup = cleanup
         self.output_prefix = 'tmpBNG' if output_prefix is None else \
             output_prefix
         if model:
-            self.generator = BngGenerator(model)
+            self.generator = BngGenerator(
+                model, additional_initials=model_additional_species,
+                population_maps=model_population_maps
+            )
             self.model = self.generator.model
             self._check_model()
         else:
@@ -66,6 +64,9 @@ class BngBaseInterface(object):
 
         self.base_directory = tempfile.mkdtemp(prefix=self.output_prefix,
                                                dir=output_dir)
+        self._logger.debug('{} instantiated in directory {}'.format(
+            self.__class__, self.base_directory)
+        )
 
     def __enter__(self):
         return self
@@ -84,8 +85,10 @@ class BngBaseInterface(object):
         """
         if not self.model.rules:
             raise NoRulesError()
-        if not self.model.initial_conditions and not any(r.is_synth() for r
-                                                         in self.model.rules):
+        if (
+            not self.model.initials
+            and not any(r.is_synth() for r in self.model.rules)
+        ):
             raise NoInitialConditionsError()
 
     @classmethod
@@ -101,11 +104,11 @@ class BngBaseInterface(object):
         param :
             An argument to a BNG action call
         """
-        if isinstance(param, basestring):
+        if isinstance(param, str):
             return '"%s"' % param
         elif isinstance(param, bool):
             return 1 if param else 0
-        elif isinstance(param, (collections.Sequence, numpy.ndarray)):
+        elif isinstance(param, (Sequence, numpy.ndarray)):
             return list(param)
         return param
 
@@ -170,6 +173,7 @@ class BngBaseInterface(object):
         not be found.
         :return: Contents of the BNG network file as a string
         """
+        self._logger.debug('Reading BNG netfile: %s' % self.net_filename)
         with open(self.net_filename, 'r') as net_file:
             output = net_file.read()
 
@@ -177,41 +181,86 @@ class BngBaseInterface(object):
 
     def read_simulation_results(self):
         """
-        Reads the results of a BNG simulation and parses them into a numpy
-        array
+        Read the results of a BNG simulation as a numpy array
+
+        Returns
+        -------
+        numpy.ndarray
+            Simulation results in a 2D matrix (time on Y axis,
+            species/observables/expressions on X axis depending on
+            simulation type)
         """
-        # Read concentrations data
-        cdat_arr = numpy.loadtxt(self.base_filename + '.cdat', skiprows=1)
-        # Read groups data
-        if self.model and len(self.model.observables):
-            # Exclude first column (time)
-            gdat_arr = numpy.loadtxt(self.base_filename + '.gdat',
-                                     skiprows=1)[:,1:]
-        else:
-            gdat_arr = numpy.ndarray((len(cdat_arr), 0))
+        return self.read_simulation_results_multi([self.base_filename])[0]
 
-        # -1 for time column
-        names = ['time'] + ['__s%d' % i for i in range(cdat_arr.shape[1]-1)]
-        yfull_dtype = list(zip(names, itertools.repeat(float)))
-        if self.model and len(self.model.observables):
-            yfull_dtype += list(zip(self.model.observables.keys(),
-                                    itertools.repeat(float)))
-        yfull = numpy.ndarray(len(cdat_arr), yfull_dtype)
+    @staticmethod
+    def read_simulation_results_multi(base_filenames):
+        """
+        Read the results of multiple BNG simulations
 
-        yfull_view = yfull.view(float).reshape(len(yfull), -1)
-        yfull_view[:, :len(names)] = cdat_arr
-        yfull_view[:, len(names):] = gdat_arr
+        Parameters
+        ----------
+        base_filenames: list of str
+            A list of filename stems to read simulation results in from,
+            including the full path but not including any file extension.
 
-        return yfull
+        Returns
+        -------
+        list of numpy.ndarray
+            List of simulation results, each in a 2D matrix (time on Y axis,
+            species/observables/expressions on X axis depending on
+            simulation type)
+        """
+        list_of_yfulls = []
+        for base_filename in base_filenames:
+            names = ['time']
+
+            # Read concentrations data
+            try:
+                cdat_arr = numpy.loadtxt(base_filename + '.cdat', skiprows=1, ndmin=2)
+                # -1 for time column
+                names += ['__s%d' % i for i in range(cdat_arr.shape[1] - 1)]
+            except IOError:
+                cdat_arr = None
+
+            # Read groups data
+            try:
+                with open(base_filename + '.gdat', 'r') as f:
+                    # Exclude \# and time column
+                    names += f.readline().split()[2:]
+                    # Exclude first column (time)
+                    gdat_arr = numpy.loadtxt(f, ndmin=2)
+                    if cdat_arr is None:
+                        cdat_arr = numpy.ndarray((len(gdat_arr), 0))
+                    else:
+                        gdat_arr = gdat_arr[:, 1:]
+            except IOError:
+                if cdat_arr is None:
+                    raise BngInterfaceError('Need at least one of .cdat file or '
+                                            '.gdat file to read simulation '
+                                            'results')
+                gdat_arr = numpy.ndarray((len(cdat_arr), 0))
+
+            yfull_dtype = list(zip(names, itertools.repeat(float)))
+            yfull = numpy.ndarray(len(cdat_arr), yfull_dtype)
+
+            yfull_view = yfull.view(float).reshape(len(yfull), -1)
+            yfull_view[:, :cdat_arr.shape[1]] = cdat_arr
+            yfull_view[:, cdat_arr.shape[1]:] = gdat_arr
+
+            list_of_yfulls.append(yfull)
+
+        return list_of_yfulls
 
 
 class BngConsole(BngBaseInterface):
     """ Interact with BioNetGen through BNG Console """
     def __init__(self, model=None, verbose=False, cleanup=True,
                  output_dir=None, output_prefix=None, timeout=30,
-                 suppress_warnings=False):
-        super(BngConsole, self).__init__(model, verbose, cleanup,
-                                         output_prefix, output_dir)
+                 suppress_warnings=False, model_additional_species=None):
+        super(BngConsole, self).__init__(
+            model, verbose, cleanup, output_prefix, output_dir,
+            model_additional_species=model_additional_species
+        )
 
         try:
             import pexpect
@@ -220,25 +269,29 @@ class BngConsole(BngBaseInterface):
                               "BNGConsole, please install it to continue.\n"
                               "It is not currently available on Windows.")
 
-        self.suppress_warnings = suppress_warnings
+        if suppress_warnings:
+            warn("suppress_warnings is deprecated and has no effect. Adjust "
+                 "the log level with the verbose argument instead.",
+                 category=DeprecationWarning,
+                 stacklevel=2)
 
-        try:
-            # Generate BNGL file
-            if self.model:
-                with open(self.bng_filename, mode='w') as bng_file:
-                    bng_file.write(self.generator.get_content())
+        # Generate BNGL file
+        if self.model:
+            with open(self.bng_filename, mode='w') as bng_file:
+                bng_file.write(self.generator.get_content())
 
-            # Start BNG Console and load BNGL
-            self.console = pexpect.spawn('perl %s --console' %
-                                         pf.get_path('bng'),
-                                         cwd=self.base_directory,
-                                         timeout=timeout)
+        # Start BNG Console and load BNGL
+        bng_path = pf.get_path('bng')
+        bng_exec_path = '%s --console' % bng_path
+        if not bng_path.endswith('.bat'):
+            bng_exec_path = 'perl %s' % bng_exec_path
+        self.console = pexpect.spawn(bng_exec_path,
+                                     cwd=self.base_directory,
+                                     timeout=timeout)
+        self._console_wait()
+        if self.model:
+            self.console.sendline('load %s' % self.bng_filename)
             self._console_wait()
-            if self.model:
-                self.console.sendline('load %s' % self.bng_filename)
-                self._console_wait()
-        except Exception as e:
-            raise BngInterfaceError(e)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """
@@ -260,10 +313,10 @@ class BngConsole(BngBaseInterface):
         console_msg = self.console.before.decode('utf-8')
         if "ERROR:" in console_msg:
             raise BngInterfaceError(console_msg)
-        elif not self.suppress_warnings and "WARNING:" in console_msg:
-            warn(console_msg)
-        elif self.verbose:
-            print(console_msg)
+        elif "WARNING:" in console_msg:
+            self._logger.warning(console_msg)
+        else:
+            self._logger.debug(console_msg)
         return console_msg
 
     def generate_network(self, overwrite=False):
@@ -276,12 +329,8 @@ class BngConsole(BngBaseInterface):
         overwrite: bool, optional
             Overwrite existing network file, if any
         """
-        try:
-            self.action('generate_network', overwrite=overwrite)
-            bng_network = self.read_netfile()
-        except Exception as e:
-            raise BngInterfaceError(e)
-        return bng_network
+        self.action('generate_network', overwrite=overwrite)
+        return self.read_netfile()
 
     def action(self, action, **kwargs):
         """
@@ -299,30 +348,42 @@ class BngConsole(BngBaseInterface):
         action_args = self._format_action_args(**kwargs)
 
         # Execute the command via the console
-        self.console.sendline('action %s({%s})' % (action, action_args))
+        if action_args == '':
+            cmd = 'action %s()' % action
+        else:
+            cmd = 'action %s({%s})' % (action, action_args)
+        self._logger.debug(cmd)
+        self.console.sendline(cmd)
 
         # Wait for the command to execute and return the result
         return self._console_wait()
 
     def load_bngl(self, bngl_file):
         """
-        Loads a BNGL file in the BNG console
+        Load a BNGL file in the BNG console
 
         Parameters
         ----------
         bngl_file : string
             The filename of a .bngl file
         """
-        self.console.sendline('load %s' % bngl_file)
+        cmd = 'load %s' % bngl_file
+        self._logger.debug(cmd)
+        self.console.sendline(cmd)
         self._console_wait()
         self._base_file_stem = os.path.splitext(os.path.basename(bngl_file))[0]
 
 
 class BngFileInterface(BngBaseInterface):
     def __init__(self, model=None, verbose=False, output_dir=None,
-                 output_prefix=None, cleanup=True):
-        super(BngFileInterface, self).__init__(model, verbose, cleanup,
-                                               output_prefix, output_dir)
+                 output_prefix=None, cleanup=True,
+                 model_additional_species=None,
+                 model_population_maps=None):
+        super(BngFileInterface, self).__init__(
+            model, verbose, cleanup, output_prefix, output_dir,
+            model_additional_species=model_additional_species,
+            model_population_maps=model_population_maps
+        )
         self._init_command_queue()
 
     def _init_command_queue(self):
@@ -342,50 +403,76 @@ class BngFileInterface(BngBaseInterface):
         if self.cleanup:
             self._delete_tmpdir()
 
-    def execute(self, reload_netfile=False):
+    def execute(self, reload_netfile=False, skip_file_actions=True):
         """
         Executes all BNG commands in the command queue.
 
         Parameters
         ----------
-        reload_netfile: bool
+        reload_netfile: bool or str
             If true, attempts to reload an existing .net file from a
-            previous execute() iteration. This is useful for running
-            multiple actions in a row, where results need to be read
-            into PySB before a new series of actions is executed.
+            previous execute() iteration. If a string, the filename
+            specified in the string is supplied to BNG's readFile (which can be
+            any file type BNG supports, such as .net or .bngl).
+            This is useful for running multiple actions in a row,
+            where results need to be read into PySB before a new series of
+            actions is executed.
+        skip_file_actions: bool
+            Only used if the previous argument is not False. Set this
+            argument to True to ignore any actions block in the loaded file.
         """
         self.command_queue.write('end actions\n')
         bng_commands = self.command_queue.getvalue()
-        try:
-            # Generate BNGL file
-            with open(self.bng_filename, 'w') as bng_file:
-                if reload_netfile:
-                    bng_commands = bng_commands.replace('begin actions\n',
-                                         'begin actions\n\treadFile({'
-                                         'file=>"%s"});\n' % self.net_filename)
-                elif self.model:
-                    bng_file.write(self.generator.get_content())
-                bng_file.write(bng_commands)
 
-            # Reset the command queue, in case execute() is called again
-            self.command_queue.close()
-            self._init_command_queue()
+        # Generate BNGL file
+        with open(self.bng_filename, 'w') as bng_file:
+            output = ''
+            if self.model and not reload_netfile:
+                output += self.generator.get_content()
+            if reload_netfile:
+                filename = reload_netfile if \
+                    isinstance(reload_netfile, str) \
+                    else self.net_filename
+                output += '\n  readFile({file=>"%s",skip_actions=>%d})\n' \
+                    % (filename, int(skip_file_actions))
+            output += bng_commands
+            bng_file.write(output)
+            lines = output.split('\n')
+            line_number_format = 'L{{:0{}d}}  {{}}'.format(int(numpy.ceil(numpy.log10(len(lines)))))
+            output = '\n'.join(line_number_format.format(ln + 1, line) for ln, line in enumerate(lines))
+            self._logger.debug('BNG command file contents:\n' + output)
 
-            p = subprocess.Popen(['perl', pf.get_path('bng'),
-                                  self.bng_filename],
-                                 cwd=self.base_directory,
-                                 stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE)
-            if self.verbose:
-                for line in iter(p.stdout.readline, b''):
-                    print(line, end="")
-            (p_out, p_err) = p.communicate()
-            if p.returncode:
-                raise BngInterfaceError(p_out.rstrip("at line") +
-                                           "\n" +
-                                           p_err.rstrip())
-        except Exception as e:
-            raise BngInterfaceError(e)
+        # Reset the command queue, in case execute() is called again
+        self.command_queue.close()
+        self._init_command_queue()
+
+        bng_exec_args = [pf.get_path('bng'), self.bng_filename]
+        if not bng_exec_args[0].endswith('.bat'):
+            bng_exec_args.insert(0, 'perl')
+
+        p = subprocess.Popen(bng_exec_args,
+                             cwd=self.base_directory,
+                             stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+
+        # output lines as DEBUG, unless a warning or error is encountered
+        capture_error = False
+        captured_error_lines = []
+        for line in iter(p.stdout.readline, b''):
+            line = line[:-1].decode('utf-8')
+            if line.startswith('ERROR:'):
+                capture_error = True
+            if capture_error:
+                captured_error_lines.append(line)
+
+            self._logger.debug(line)
+
+        # p_out is already consumed, so only get p_err
+        (_, p_err) = p.communicate()
+        p_err = p_err.decode('utf-8')
+        if p.returncode or captured_error_lines:
+            raise BngInterfaceError('\n'.join(captured_error_lines) + "\n" +
+                                    p_err.rstrip())
 
     def action(self, action, **kwargs):
         """
@@ -402,9 +489,64 @@ class BngFileInterface(BngBaseInterface):
         action_args = self._format_action_args(**kwargs)
 
         # Add the command to the queue
-        self.command_queue.write('\t%s({%s})\n' % (action, action_args))
+        if action_args == '':
+            self.command_queue.write('\t%s()\n' % action)
+        else:
+            self.command_queue.write('\t%s({%s})\n' % (action, action_args))
 
         return
+
+    def set_parameter(self, name, value):
+        """
+        Generates a BNG action command and adds it to the command queue
+
+        Parameters
+        ----------
+        name: string
+            The name of the parameter to set
+        value: float-like
+            Value of parameter
+
+        """
+        self.command_queue.write('\tsetParameter("%s", %g)\n' % (name, value))
+
+    def set_concentration(self, cplx_pat, value):
+        """
+        Generates a BNG action command and adds it to the command queue
+
+        Parameters
+        ----------
+        cplx_pat: pysb.ComplexPattern or string
+            Species ComplexPattern, or a BNG format string representation
+        value: float-like
+            Initial concentration
+
+        """
+        if isinstance(cplx_pat, str):
+            formatted_name = cplx_pat
+        else:
+            formatted_name = format_complexpattern(
+                pysb.core.as_complex_pattern(cplx_pat)
+            )
+        self.command_queue.write('\tsetConcentration("%s", %g)\n' % (
+            formatted_name, value))
+
+
+def generate_hybrid_model(model, population_maps, additional_species=None,
+                          safe=False, verbose=False, output_dir=None,
+                          output_prefix=None, cleanup=True):
+    with BngFileInterface(model,
+                          output_dir=output_dir,
+                          output_prefix=output_prefix,
+                          cleanup=cleanup,
+                          model_additional_species=additional_species,
+                          model_population_maps=population_maps) as bng:
+        bng.action('generate_hybrid_model', verbose=verbose, safe=safe,
+                   suffix='hpp')
+        bng.execute()
+
+        with open(bng.base_filename + '_hpp.bngl', 'r') as f:
+            return f.read()
 
 
 def run_ssa(model, t_end=10, n_steps=100, param_values=None, output_dir=None,
@@ -423,7 +565,7 @@ def run_ssa(model, t_end=10, n_steps=100, param_values=None, output_dir=None,
         Number of steps in the simulation.
     param_values : vector-like or dictionary, optional
             Values to use for every parameter in the model. Ordering is
-            determined by the order of model.parameters. 
+            determined by the order of model.parameters.
             If not specified, parameter values will be taken directly from
             model.parameters.
     output_dir : string, optional
@@ -437,27 +579,36 @@ def run_ssa(model, t_end=10, n_steps=100, param_values=None, output_dir=None,
     cleanup : bool, optional
         If True (default), delete the temporary files after the simulation is
         finished. If False, leave them in place. Useful for debugging.
-    verbose: bool, optional
-        If True, print BNG screen output.
+    verbose : bool or int, optional (default: False)
+        Sets the verbosity level of the logger. See the logging levels and
+        constants from Python's logging module for interpretation of integer
+        values. False is equal to the PySB default level (currently WARNING),
+        True is equal to DEBUG.
     additional_args: kwargs, optional
         Additional arguments to pass to BioNetGen
 
     """
+    bng_action_debug = verbose if isinstance(verbose, bool) else \
+        verbose <= EXTENDED_DEBUG
+
     additional_args['method'] = 'ssa'
     additional_args['t_end'] = t_end
     additional_args['n_steps'] = n_steps
-    additional_args['verbose'] = verbose
+    additional_args['verbose'] = additional_args.get('verbose',
+                                                     bng_action_debug)
 
     if param_values is not None:
         if len(param_values) != len(model.parameters):
-            raise Exception("param_values must be the same length as model.parameters")
+            raise Exception("param_values must be the same length as "
+                            "model.parameters")
         for i in range(len(param_values)):
             model.parameters[i].value = param_values[i]
 
     with BngFileInterface(model, verbose=verbose, output_dir=output_dir,
                           output_prefix=output_file_basename,
                           cleanup=cleanup) as bngfile:
-        bngfile.action('generate_network', overwrite=True, verbose=verbose)
+        bngfile.action('generate_network', overwrite=True,
+                       verbose=bng_action_debug)
         bngfile.action('simulate', **additional_args)
 
         bngfile.execute()
@@ -473,7 +624,8 @@ def run_ssa(model, t_end=10, n_steps=100, param_values=None, output_dir=None,
     return yfull
 
 
-def generate_network(model, cleanup=True, append_stdout=False, verbose=False):
+def generate_network(model, cleanup=True, append_stdout=False,
+                     verbose=False, **kwargs):
     """
     Return the output from BNG's generate_network function given a model.
 
@@ -492,11 +644,19 @@ def generate_network(model, cleanup=True, append_stdout=False, verbose=False):
     append_stdout : bool, optional
         This option is no longer supported and has been left here for API
         compatibility reasons.
-    verbose : bool, optional
-        If True, print output from BNG to stdout.
+    verbose : bool or int, optional (default: False)
+        Sets the verbosity level of the logger. See the logging levels and
+        constants from Python's logging module for interpretation of integer
+        values. False is equal to the PySB default level (currently WARNING),
+        True is equal to DEBUG.
     """
+    bng_action_debug = verbose if isinstance(verbose, bool) else \
+        verbose <= EXTENDED_DEBUG
+
     with BngFileInterface(model, verbose=verbose, cleanup=cleanup) as bngfile:
-        bngfile.action('generate_network', overwrite=True, verbose=verbose)
+        bngfile._logger.info('Generating reaction network')
+        bngfile.action('generate_network', overwrite=True,
+                       verbose=bng_action_debug, **kwargs)
         bngfile.execute()
 
         output = bngfile.read_netfile()
@@ -504,37 +664,72 @@ def generate_network(model, cleanup=True, append_stdout=False, verbose=False):
     return output
 
 
-def generate_equations(model, cleanup=True, verbose=False):
+def load_equations(model, netfile):
+    """
+    Load model equations from a specified netfile
+
+    Useful for large models where BioNetGen network generation takes a long
+    time - the .net file can be saved and reloaded using this function at a
+    later date.
+
+    Parameters
+    ----------
+    model: pysb.Model
+        PySB model file
+    netfile: str
+        BNG netfile
+    """
+    if model.reactions:
+        return
+    with open(netfile, 'r') as f:
+        _parse_netfile(model, f)
+
+
+def generate_equations(model, cleanup=True, verbose=False, **kwargs):
     """
     Generate math expressions for reaction rates and species in a model.
 
     This fills in the following pieces of the model:
 
-    * odes
     * species
     * reactions
     * reactions_bidirectional
     * observables (just `coefficients` and `species` fields for each element)
 
+    Parameters
+    ----------
+    model : Model
+        Model to pass to generate_network.
+    cleanup : bool, optional
+        If True (default), delete the temporary files after the simulation is
+        finished. If False, leave them in place (in `output_dir`). Useful for
+        debugging.
+    verbose : bool or int, optional (default: False)
+        Sets the verbosity level of the logger. See the logging levels and
+        constants from Python's logging module for interpretation of integer
+        values. False is equal to the PySB default level (currently WARNING),
+        True is equal to DEBUG.
+
     """
     # only need to do this once
     # TODO track "dirty" state, i.e. "has model been modified?"
     #   or, use a separate "math model" object to contain ODEs
-    if model.odes:
+    if model.reactions:
         return
-    lines = iter(generate_network(model,cleanup=cleanup,verbose=verbose).split('\n'))
+    lines = iter(generate_network(model, cleanup=cleanup,
+                                  verbose=verbose, **kwargs).split('\n'))
     _parse_netfile(model, lines)
 
 
 def _parse_netfile(model, lines):
-    """Parse 'species', 'reactions', and 'groups' blocks from a BNGL net file."""
+    """ Parse species, rxns and groups from a BNGL net file """
     try:
-        global new_reverse_convention
-        (bng_version, bng_codename) = re.match(r'# Created by BioNetGen (\d+\.\d+\.\d+)(?:-(\w+))?$', next(lines)).groups()
-        if parse_version(bng_version) > parse_version("2.2.6") or parse_version(bng_version) == parse_version("2.2.6") and bng_codename == "stable":
-            new_reverse_convention = True
-        else:
-            new_reverse_convention = False
+        while 'begin parameters' not in next(lines):
+            pass
+        while True:
+            line = next(lines)
+            if 'end parameters' in line: break
+            _parse_parameter(model, line)
 
         while 'begin species' not in next(lines):
             pass
@@ -546,13 +741,12 @@ def _parse_netfile(model, lines):
 
         while 'begin reactions' not in next(lines):
             pass
-        model.odes = [sympy.numbers.Zero()] * len(model.species)
-        global reaction_cache
+
         reaction_cache = {}
         while True:
             line = next(lines)
             if 'end reactions' in line: break
-            _parse_reaction(model, line)
+            _parse_reaction(model, line, reaction_cache=reaction_cache)
         # fix up reactions whose reverse version we saw first
         for r in model.reactions_bidirectional:
             if all(r['reverse']):
@@ -572,16 +766,38 @@ def _parse_netfile(model, lines):
         pass
 
 
+def _parse_parameter(model, line):
+    _, pname, pval, _, ptype = line.strip().split()
+    par_names = model.components.keys()
+    if pname not in par_names:
+        # Need to parse the value even for constants, since BNG considers some
+        # expressions to be "Constant", e.g. "2^2"
+        parsed_expr = parse_bngl_expr(pval, local_dict={
+            e.name: e for e in model.parameters | model.expressions})
+        if ptype == 'Constant' and pname not in model._derived_parameters.keys():
+            p = pysb.core.Parameter(pname, parsed_expr, _export=False)
+            model._derived_parameters.add(p)
+        elif ptype == 'ConstantExpression' and \
+                pname not in model._derived_expressions.keys():
+            p = pysb.core.Expression(pname, parsed_expr, _export=False)
+            model._derived_expressions.add(p)
+        else:
+            raise ValueError('Unknown type {} for parameter {}'.format(
+                ptype, pname))
+
+
 def _parse_species(model, line):
     """Parse a 'species' line from a BNGL net file."""
     index, species, value = line.strip().split()
-    species_compartment_name, complex_string = re.match(r'(?:@(\w+)::)?(.*)', species).groups()
+    species_compartment_name, complex_string = \
+        re.match(r'(?:@(\w+)::)?(.*)', species).groups()
     species_compartment = model.compartments.get(species_compartment_name)
     monomer_strings = complex_string.split('.')
     monomer_patterns = []
     for ms in monomer_strings:
-        monomer_name, site_strings, monomer_compartment_name = re.match(r'(\w+)\(([^)]*)\)(?:@(\w+))?', ms).groups()
-        site_conditions = {}
+        monomer_name, site_strings, monomer_compartment_name = \
+            re.match(r'\$?(\w+)\(([^)]*)\)(?:@(\w+))?', ms).groups()
+        site_conditions = collections.defaultdict(list)
         if len(site_strings):
             for ss in site_strings.split(','):
                 # FIXME this should probably be done with regular expressions
@@ -605,7 +821,10 @@ def _parse_species(model, line):
                     site_name, condition = ss.split('~')
                 else:
                     site_name, condition = ss, None
-                site_conditions[site_name] = condition
+                site_conditions[site_name].append(condition)
+
+        site_conditions = {k: v[0] if len(v) == 1 else pysb.core.MultiState(*v)
+                           for k, v in site_conditions.items()}
         monomer = model.monomers[monomer_name]
         monomer_compartment = model.compartments.get(monomer_compartment_name)
         # Compartment prefix notation in BNGL means "assign this compartment to
@@ -618,21 +837,27 @@ def _parse_species(model, line):
     model.species.append(cp)
 
 
-def _parse_reaction(model, line):
+def _parse_reaction(model, line, reaction_cache):
     """Parse a 'reaction' line from a BNGL net file."""
     (number, reactants, products, rate, rule) = line.strip().split(' ', 4)
     # the -1 is to switch from one-based to zero-based indexing
-    reactants = tuple(int(r) - 1 for r in reactants.split(','))
-    products = tuple(int(p) - 1 for p in products.split(','))
+    reactants = tuple(int(r) - 1 for r in reactants.split(',') if r != '0')
+    products = tuple(int(p) - 1 for p in products.split(',') if p != '0')
     rate = rate.rsplit('*')
     (rule_list, unit_conversion) = re.match(
-                    r'#([\w,\(\)]+)(?: unit_conversion=(.*))?\s*$', rule).groups()
-    rule_list = rule_list.split(',') # BNG lists all rules that generate a rxn
-    # Support new (BNG 2.2.6-stable or greater) and old BNG naming convention for reverse rules
-    rule_name, is_reverse = zip(*[re.subn('^_reverse_|\(reverse\)$', '', r) for r in rule_list])
+        r'#([\w,\(\)]+)(?: unit_conversion=(.*))?\s*$',
+        rule).groups()
+    rule_list = rule_list.split(',')  # BNG lists all rules that generate a rxn
+    # Support new (BNG 2.2.6-stable or greater) and old BNG naming convention
+    # for reverse rules
+    rule_name, is_reverse = zip(*[re.subn('^_reverse_|\(reverse\)$', '', r)
+                                  for r in rule_list])
     is_reverse = tuple(bool(i) for i in is_reverse)
     r_names = ['__s%d' % r for r in reactants]
-    combined_rate = sympy.Mul(*[sympy.S(t) for t in r_names + rate])
+    rate_param = [model.parameters.get(r) or model.expressions.get(r) or
+                  model._derived_parameters.get(r) or
+                  model._derived_expressions.get(r) or float(r) for r in rate]
+    combined_rate = sympy.Mul(*[sympy.S(t) for t in r_names + rate_param])
     reaction = {
         'reactants': reactants,
         'products': products,
@@ -654,7 +879,7 @@ def _parse_reaction(model, line):
         reaction_bd['reversible'] = True
         reaction_bd['rate'] -= combined_rate
         reaction_bd['rule'] += tuple(r for r in rule_name if r not in
-                                         reaction_bd['rule'])
+                                     reaction_bd['rule'])
     else:
         # make a copy of the reaction dict
         reaction_bd = dict(reaction)
@@ -662,13 +887,8 @@ def _parse_reaction(model, line):
         reaction_bd['reversible'] = False
         reaction_cache[key] = reaction_bd
         model.reactions_bidirectional.append(reaction_bd)
-    # odes
-    for p in products:
-        model.odes[p] += combined_rate
-    for r in reactants:
-        model.odes[r] -= combined_rate
-            
-            
+
+
 def _parse_group(model, line):
     """Parse a 'group' line from a BNGL net file."""
     # values are number (which we ignore), name, and species list
@@ -686,11 +906,71 @@ def _parse_group(model, line):
             obs.species.append(int(terms[1]) - 1)
 
 
+def _convert_tokens(tokens, local_dict, global_dict):
+    for pos, tok in enumerate(tokens):
+        if tok == (tokenize.NAME, 'if'):
+            tokens[pos] = (tokenize.NAME, '__bngl_if')
+            local_dict['__bngl_if'] = sympy.Function('bngl_if')
+        elif tok == (tokenize.OP, '^'):
+            tokens[pos] = (tokenize.OP, '**')
+        elif tok == (tokenize.NAME, 'and'):
+            tokens[pos] = (tokenize.OP, '&')
+        elif tok == (tokenize.NAME, 'or'):
+            tokens[pos] = (tokenize.OP, '|')
+    return tokens
+
+
+def _is_bool_expr(e):
+    return isinstance(e, Boolean) and not isinstance(e, sympy.AtomicExpr)
+
+
+def _fix_boolean_multiplication(*args):
+    args = [
+        sympy.Piecewise((1, a), (0, True)) if _is_bool_expr(a) else a
+        for a in args
+    ]
+    return sympy.Mul(*args)
+
+
+def parse_bngl_expr(text, *args, **kwargs):
+    """Convert a BNGL math expression string to a sympy Expr."""
+
+    # Translate a few operators with simple text replacement.
+    text = text.replace('()', '')
+    text = text.replace('==', '=')
+    # Use sympy to parse the text into an Expr.
+    trans = (
+        sympy_parser.standard_transformations
+        + (sympy_parser.convert_equals_signs, _convert_tokens)
+    )
+    expr = sympy_parser.parse_expr(text, *args, transformations=trans,
+                                   evaluate=False, **kwargs)
+
+    # Replace Boolean multiplications, e.g. `2 * (3 > 0)`
+    # See https://github.com/pysb/pysb/pull/494
+    expr = expr.replace(sympy.Mul, _fix_boolean_multiplication)
+
+    # Transforming 'if' to Piecewise requires subexpression rearrangement, so we
+    # use sympy's replace functionality rather than attempt it using text
+    # replacements above.
+    expr = expr.replace(
+        sympy.Function('bngl_if'),
+        lambda cond, t, f: sympy.Piecewise((t, cond), (f, True))
+    )
+    # Check for unsupported constructs.
+    if expr.has(sympy.Symbol('time')):
+        raise ValueError(
+            "Expressions referencing simulation time are not supported"
+        )
+    return expr
+
+
 class NoInitialConditionsError(RuntimeError):
     """Model initial_conditions is empty."""
     def __init__(self):
         RuntimeError.__init__(self, "Model has no initial conditions or "
                                     "zero-order synthesis rules")
+
 
 class NoRulesError(RuntimeError):
     """Model rules is empty."""
