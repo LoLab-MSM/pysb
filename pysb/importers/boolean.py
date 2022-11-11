@@ -3,14 +3,18 @@ try:
     from boolean2 import boolmodel
 except ImportError:
     raise ImportError('BooleanTranslator requires the package booleannet. \
-    Run "pip install booleannet" at the command line to install it')
+    Run "pip install git+https://github.com/ialbert/booleannet" at the command line to install it')
 from pysb.builder import Builder
 from pysb.core import *
 import copy
 import pydot
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-from StringIO import StringIO
+from sympy import Piecewise
+try:
+    from StringIO import StringIO ## for Python 2
+except ImportError:
+    from io import StringIO ## for Python 3
 
 class BooleanTranslationError(Exception):
     pass
@@ -138,8 +142,8 @@ class BooleanTranslator(Builder):
                 is_reversible = True
                 n_fired = self.observable('N_FIRED', ReactionPattern(nfired_pat))
                 n_nodes = self.parameter('N_NODES', len(self.initial_states.keys()))
-                rate_forward = self.expression('reset_Y_N', k_reset*(n_fired< 0.5))
-                rate_reverse = self.expression('reset_N_Y', k_reset*(n_fired>(n_nodes-0.5)))
+                rate_forward = self.expression('reset_Y_N', Piecewise((k_reset, n_fired < 0.5), (0, True))) #k_reset*(n_fired< 0.5))
+                rate_reverse = self.expression('reset_N_Y', Piecewise((k_reset, n_fired > (n_nodes-0.5)), (0, True))) #  k_reset*(n_fired>(n_nodes-0.5)))
                         
             rule_expr = RuleExpression(as_reaction_pattern(reset_reac),
                                        as_reaction_pattern(reset_prod),
@@ -377,15 +381,15 @@ class BooleanTranslator(Builder):
         groupSize = 2**(lenN-high+1)
         exchangeSize = 2**(lenN-low)
         ind = 0
-        for i in range(lenL/groupSize):
-            for j in range(0, groupSize/2, exchangeSize):
+        for i in range(int(lenL/groupSize)):
+            for j in range(0, int(groupSize/2), exchangeSize):
                 if ind == 0:
                     ind = 1
                 elif ind == 1:
                     ind = 0
                     leaves[(i*groupSize + j):(i*groupSize + j)+exchangeSize], \
-                    leaves[(i*groupSize + j)+groupSize/2-exchangeSize:(i*groupSize + j)+groupSize/2] = \
-                    leaves[(i*groupSize + j)+groupSize/2-exchangeSize:(i*groupSize + j)+groupSize/2], \
+                    leaves[(i*groupSize + j)+int(groupSize/2)-exchangeSize:(i*groupSize + j)+int(groupSize/2)] = \
+                    leaves[(i*groupSize + j)+int(groupSize/2)-exchangeSize:(i*groupSize + j)+int(groupSize/2)], \
                     leaves[(i*groupSize + j):(i*groupSize + j)+exchangeSize]
     
         return leaves   

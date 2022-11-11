@@ -25,10 +25,10 @@ for mode in modes:
         max_sim_steps = output_step_interval*rounds
 
     if tspan is not None:
-        print mode, '-- TIME'
+        print(mode, '-- TIME')
         trajectories = []
         for n in range(n_sims):
-            print n
+            print(n)
             x = run_ssa(model, t_end=tspan[-1], n_steps=len(tspan)-1)
             trajectories.append(x)
 
@@ -47,10 +47,10 @@ for mode in modes:
         plt.legend(loc=0)
         
     if rounds is not None:
-        print mode, '-- ROUNDS'
+        print(mode, '-- ROUNDS')
         trajectories = []
         for n in range(n_sims):
-            print n
+            print(n)
             x = run_ssa(model, t_end=output_step_interval*100, n_steps=1,
                         output_step_interval=output_step_interval, 
                         max_sim_steps=max_sim_steps)
