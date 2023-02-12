@@ -79,7 +79,7 @@ class BooleanTranslator(Builder):
             nfired_pat = []
         #~~~~~
         for name,state in self.initial_states.items():
-            rank = self.function_ranks.get(name)
+            rank = self.function_ranks.get(name, 1)
             # create monomer
             mon_sites = ['state']
             mon_site_states = {'state' : ['False','True']}
