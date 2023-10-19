@@ -12,14 +12,16 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 from sympy import Piecewise
 try:
-    from StringIO import StringIO ## for Python 2
+    from StringIO import StringIO  # for Python 2
 except ImportError:
-    from io import StringIO ## for Python 3
+    from io import StringIO  # for Python 3
+
 
 class BooleanTranslationError(Exception):
     pass
 
-class _Node(): 
+
+class _Node:
     """
     Node class for tree construction
     """
@@ -50,6 +52,7 @@ class _Node():
     def insertFalse(self, false_function, reduced_node_set, false_id, index):
         self.false_node = _Node(false_function, reduced_node_set, false_id, index)
 
+
 class BooleanTranslator(Builder):
     """
     Assemble a Model from a BooleanNet model file.
@@ -57,7 +60,7 @@ class BooleanTranslator(Builder):
     See :py:func:`model_from_boolean` for further details.
     """
     _supported_formats = ['BooleanNet']
-    _supported_modes = ['GSP','ROA','GA','SYN']
+    _supported_modes = ['GSP', 'ROA', 'GA', 'SYN']
     # GSP: Gillespie
     # ROA: Random-order asynchronous
     # GA:  General asynchronous    
@@ -73,65 +76,66 @@ class BooleanTranslator(Builder):
                                           (str(mode), str(self._supported_modes)))
         self._parse_input_file(filename, format=format)
         # create monomers, initial conditions, and observables
-        #~~~~~
-        if mode in ['ROA','SYN']:
+        # ~~~~~
+        if mode in ['ROA', 'SYN']:
             # patterns for triggering the RESET rule
             nfired_pat = []
-        #~~~~~
-        for name,state in self.initial_states.items():
+        # ~~~~~
+        for name, state in self.initial_states.items():
             rank = self.function_ranks.get(name, 1)
             # create monomer
             mon_sites = ['state']
-            mon_site_states = {'state' : ['False','True']}
-            #~~~~~
-            if mode in ['ROA','GA','SYN'] and rank > 1:
+            mon_site_states = {'state': ['False', 'True']}
+            # ~~~~~
+            if mode in ['ROA', 'GA', 'SYN'] and rank > 1:
                 mon_sites.append('delay')
                 mon_site_states['delay'] = [str(i) for i in range(rank)]
             if mode in ['ROA', 'SYN']:
                 mon_sites.append('reset')
-                mon_site_states['reset'] = ['N','Y']
+                mon_site_states['reset'] = ['N', 'Y']
             if mode == 'SYN':
                 mon_sites.append('copy')
-                mon_site_states['copy'] = ['False','True','None']
+                mon_site_states['copy'] = ['False', 'True', 'None']
                 if rank > 1:
                     mon_site_states['copy'].append('Delay')
-            #~~~~~
+            # ~~~~~
             mon = self.monomer(name, mon_sites, mon_site_states)
-            #~~~~~
+            # ~~~~~
             # store pattern for triggering RESET rule
-            if mode in ['ROA','SYN']:
-                mon_pat_states = {'reset' : 'Y'}
+            if mode in ['ROA', 'SYN']:
+                mon_pat_states = {'reset': 'Y'}
                 mon_pat = MonomerPattern(mon, mon_pat_states, compartment=None)
-                nfired_pat.append(as_complex_pattern(mon_pat))
-            #~~~~~
+                if name in self.functions.keys():  # only include nodes with update rules
+                    nfired_pat.append(as_complex_pattern(mon_pat))
+            # ~~~~~
             # create initial condition and observable for both 'False' and 'True' states
             for s in mon.site_states['state']:
                 # Observable
-                mon_pat_states = {'state' : s}
+                mon_pat_states = {'state': s}
                 mon_pat = MonomerPattern(mon, mon_pat_states, compartment=None)
-                self.observable('%s_%s_obs'%(name,s), as_complex_pattern(mon_pat))
+                self.observable('%s_%s_obs' % (name, s), as_complex_pattern(mon_pat))
                 # Initial
                 # redefine 'mon_pat_states' so that changes below don't affect observable
-                mon_pat_states = {'state' : s} 
-                #~~~~~
-                if mode in ['ROA','GA','SYN'] and rank > 1:
+                mon_pat_states = {'state': s}
+                # ~~~~~
+                if mode in ['ROA', 'GA', 'SYN'] and rank > 1:
                     mon_pat_states['delay'] = '0'
                 if mode in ['ROA', 'SYN']:
                     mon_pat_states['reset'] = 'N'
                 if mode == 'SYN':
                     mon_pat_states['copy'] = 'None'
-                #~~~~~
+                # ~~~~~
                 mon_pat = MonomerPattern(mon, mon_pat_states, compartment=None)
-                init = self.parameter('%s_%s_init'%(name,s), 1 if s == state else 0)
+                init = self.parameter('%s_%s_init' % (name, s), 1 if s == state else 0)
                 self.initial(as_complex_pattern(mon_pat), init)
-        #~~~~~
+        # ~~~~~
         # RESET rule
         if mode in ['ROA', 'GA', 'SYN']:
             k_reset = self.parameter('k_reset', 1e10) 
-            reset_mon = self.monomer('RESET', ['reset'], {'reset' : ['N', 'Y']})
-            mon_pat = MonomerPattern(reset_mon, {'reset' : 'N'}, compartment=None)
+            reset_mon = self.monomer('RESET', ['reset'], {'reset': ['N', 'Y']})
+            mon_pat = MonomerPattern(reset_mon, {'reset': 'N'}, compartment=None)
             self.initial(as_complex_pattern(mon_pat), self.parameter('RESET_init', 1))
-            reset_reac = MonomerPattern(reset_mon, {'reset' : 'Y'}, compartment=None)
+            reset_reac = MonomerPattern(reset_mon, {'reset': 'Y'}, compartment=None)
             reset_prod = mon_pat
             is_reversible = False
             rate_forward = k_reset
@@ -141,15 +145,17 @@ class BooleanTranslator(Builder):
                 # RESET(reset~N) <-> RESET(reset~Y)  1e10*if(N_FIRED>(N_NODES-0.5),1,0), 1e10*if(N_FIRED<0.5,1,0)
                 is_reversible = True
                 n_fired = self.observable('N_FIRED', ReactionPattern(nfired_pat))
-                n_nodes = self.parameter('N_NODES', len(self.initial_states.keys()))
-                rate_forward = self.expression('reset_Y_N', Piecewise((k_reset, n_fired < 0.5), (0, True))) #k_reset*(n_fired< 0.5))
-                rate_reverse = self.expression('reset_N_Y', Piecewise((k_reset, n_fired > (n_nodes-0.5)), (0, True))) #  k_reset*(n_fired>(n_nodes-0.5)))
+                n_nodes = self.parameter('N_NODES', len(nfired_pat))
+                # k_reset*(n_fired< 0.5))
+                rate_forward = self.expression('reset_Y_N', Piecewise((k_reset, n_fired < 0.5), (0, True)))
+                # k_reset*(n_fired>(n_nodes-0.5)))
+                rate_reverse = self.expression('reset_N_Y', Piecewise((k_reset, n_fired > (n_nodes-0.5)), (0, True)))
                         
             rule_expr = RuleExpression(as_reaction_pattern(reset_reac),
                                        as_reaction_pattern(reset_prod),
                                        is_reversible=is_reversible)
             self.rule('RESET_rule', rule_expr, rate_forward, rate_reverse)
-        #~~~~~
+        # ~~~~~
 
         # minimize the ROBDD paths
         orderedNodes = self._findMinPathOrderHeap(self.functions, self.function_nodes)
@@ -158,7 +164,7 @@ class BooleanTranslator(Builder):
         BDDs = self._grove(self.functions, orderedNodes)
         for bdd in BDDs:
             self._createRules(bdd, mode=mode)
-    
+
     def _parse_input_file(self, filename, format="BooleanNet"):
         if format not in BooleanTranslator._supported_formats:
             raise BooleanTranslationError(format + ' file type not supported')
@@ -172,19 +178,19 @@ class BooleanTranslator(Builder):
         ``functions``, ``function_nodes``, and ``function_ranks``.
         """
         text = open(filename, 'r').read()
-        parser = boolmodel.BoolModel( mode='rank', text=text )
+        parser = boolmodel.BoolModel(mode='rank', text=text)
         parser.initialize()
         # Initial conditions
-        self.initial_states = {} # initial states for each node
+        self.initial_states = {}  # initial states for each node
         for init in parser.init_tokens:
             state = init[-1].value
             for token in init:
                 if token.type == 'ID':
                     self.initial_states[token.value] = state
         # Boolean functions
-        self.functions = {} # tokenized lists of all Boolean functions
-        self.function_nodes = {} # lists of nodes incident on each node (function variables)
-        self.function_ranks = {} # ranks for each update function
+        self.functions = {}  # tokenized lists of all Boolean functions
+        self.function_nodes = {}  # lists of nodes incident on each node (function variables)
+        self.function_ranks = {}  # ranks for each update function
         for rule in parser.update_tokens:
             node = rule[1].value
             self.functions[node] = []
@@ -213,7 +219,7 @@ class BooleanTranslator(Builder):
         false_half = function[:]
         if nodes != []:
             current_node.index_name = current_node.function_nodes[0]
-            for i,token in enumerate(function):
+            for i, token in enumerate(function):
                 if token == nodes[0]:
                     true_half[i] = 'True'
                     false_half[i] = 'False'
@@ -222,10 +228,10 @@ class BooleanTranslator(Builder):
             function_update = true_half + false_half
             true_function = function_update[:]
             false_function = function_update[:]
-            for i,bool in enumerate(true_function):
+            for i, bool in enumerate(true_function):
                 if bool == nodes[0]:
                     true_function[i] = 'True'
-            for i,bool in enumerate(false_function):
+            for i, bool in enumerate(false_function):
                 if bool == nodes[0]:
                     false_function[i] = 'False'                
             current_node.true_function = true_function
@@ -244,9 +250,9 @@ class BooleanTranslator(Builder):
         """
         Creates index for use in constructing the ROBDD from the tree
         """
-        if indexList == None:
+        if indexList is None:
             indexList = {}
-        if expansion != None:
+        if expansion is not None:
             if expansion.index in indexList and expansion not in indexList[expansion.index]:
                 indexList[expansion.index].append(expansion)
                 self._indexNodes(expansion.getTrueNode(), indexList)
@@ -275,22 +281,21 @@ class BooleanTranslator(Builder):
         False_leaf.index_name = 'False'
     
         # set final node level to appropriate leaf node (True/False value)
-        for i,j in enumerate(indexList[L-1]):
-            if indexList[L-1][i].true_node.value == True:
+        for i, j in enumerate(indexList[L-1]):
+            if indexList[L-1][i].true_node.value is True:
                 indexList[L-1][i].true_node = True_leaf
             else:
                 indexList[L-1][i].true_node = False_leaf
-            if indexList[L-1][i].false_node.value == True:
+            if indexList[L-1][i].false_node.value is True:
                 indexList[L-1][i].false_node = True_leaf
             else:
                 indexList[L-1][i].false_node = False_leaf  
-        n=1
+        n = 1
         while L-n != 1:
-            
             # find redundant nodes
-            for i,j in enumerate(indexList[L-n]):
+            for i, j in enumerate(indexList[L-n]):
                 if indexList[L-n][i].true_node == indexList[L-n][i].false_node:
-                    for k,l in enumerate(indexList[L-n-1]):
+                    for k, l in enumerate(indexList[L-n-1]):
                         if indexList[L-n-1][k].true_node.id == indexList[L-n][i].id:
                             indexList[L-n-1][k].true_node = indexList[L-n][i].true_node
                             indexList[L-n][i].mark = 'redundant'
@@ -300,7 +305,7 @@ class BooleanTranslator(Builder):
                             
             # remove redundant nodes
             removeList = []
-            for i,j in enumerate(indexList[L-n]):
+            for i, j in enumerate(indexList[L-n]):
                 if indexList[L-n][i].mark == 'redundant':
                     removeList.append(indexList[L-n][i])
             for each in removeList:
@@ -309,12 +314,14 @@ class BooleanTranslator(Builder):
             # find isomorphic nodes
             dup = []
             removeList = []
-            for i,j in enumerate(indexList[L-n]):
-                if indexList[L-n][i].mark == None:
+            for i, j in enumerate(indexList[L-n]):
+                if indexList[L-n][i].mark is None:
                     indexList[L-n][i].mark = indexList[L-n][i].id
                     dup.append(indexList[L-n][i].mark)
-                    for k,l in enumerate(indexList[L-n]):
-                        if (indexList[L-n][k].mark == None) and (indexList[L-n][i].true_node == indexList[L-n][k].true_node) and (indexList[L-n][i].false_node == indexList[L-n][k].false_node):
+                    for k, l in enumerate(indexList[L-n]):
+                        if (indexList[L-n][k].mark is None) and \
+                                (indexList[L-n][i].true_node == indexList[L-n][k].true_node) and \
+                                (indexList[L-n][i].false_node == indexList[L-n][k].false_node):
                             indexList[L-n][k].mark = indexList[L-n][i].id
                             removeList.append(indexList[L-n][k])
             
@@ -322,17 +329,17 @@ class BooleanTranslator(Builder):
             for each in dup:
                 marked = False
                 temp_node = None
-                for i,j in enumerate(indexList[L-n-1]):
-                    if indexList[L-n-1][i].true_node.mark == each and marked == False:
+                for i, j in enumerate(indexList[L-n-1]):
+                    if indexList[L-n-1][i].true_node.mark == each and marked is False:
                         temp_node = indexList[L-n-1][i].true_node
                         marked = True
-                    if indexList[L-n-1][i].false_node.mark == each and marked == False:
+                    if indexList[L-n-1][i].false_node.mark == each and marked is False:
                         temp_node = indexList[L-n-1][i].false_node
                         marked = True
                                            
-                    if indexList[L-n-1][i].true_node.mark == each and marked == True:
+                    if indexList[L-n-1][i].true_node.mark == each and marked is True:
                         indexList[L-n-1][i].true_node = temp_node
-                    if indexList[L-n-1][i].false_node.mark == each and marked == True:
+                    if indexList[L-n-1][i].false_node.mark == each and marked is True:
                         indexList[L-n-1][i].false_node = temp_node
             for each in removeList:
                 indexList[L-n].remove(each)
@@ -349,21 +356,21 @@ class BooleanTranslator(Builder):
         table = []
         for i in range(2**len(nodes)):
             table.append([])
-        for i,node in enumerate(nodes, 1):
+        for i, node in enumerate(nodes, 1):
             k = len(table)/(2**i)
             count = 1
             value = True
-            for j,case in enumerate(table, 1):
+            for j, case in enumerate(table, 1):
                 case.append(value)
                 if count == k:
                     count = 0
                     value = not value
-                count+=1
+                count += 1
              
-        for i,each in enumerate(table):
+        for i, each in enumerate(table):
             function_copy = copy.deepcopy(function)
-            for j,node in enumerate(nodes):
-                for k,token in enumerate(function_copy):
+            for j, node in enumerate(nodes):
+                for k, token in enumerate(function_copy):
                     if token == node:
                         function_copy[k] = each[j]        
             expression = " ".join(map(str, function_copy))
@@ -388,15 +395,16 @@ class BooleanTranslator(Builder):
                 elif ind == 1:
                     ind = 0
                     leaves[(i*groupSize + j):(i*groupSize + j)+exchangeSize], \
-                    leaves[(i*groupSize + j)+int(groupSize/2)-exchangeSize:(i*groupSize + j)+int(groupSize/2)] = \
-                    leaves[(i*groupSize + j)+int(groupSize/2)-exchangeSize:(i*groupSize + j)+int(groupSize/2)], \
-                    leaves[(i*groupSize + j):(i*groupSize + j)+exchangeSize]
+                        leaves[(i*groupSize + j)+int(groupSize/2) - exchangeSize:(i*groupSize + j)+int(groupSize/2)] = \
+                        leaves[(i*groupSize + j)+int(groupSize/2)-exchangeSize:(i*groupSize + j)+int(groupSize/2)], \
+                        leaves[(i*groupSize + j):(i*groupSize + j)+exchangeSize]
     
-        return leaves   
+        return leaves
     
     def _findMinPathOrderHeap(self, functions, nodes): 
         """
-        Determines a variable order for the minimum number of BDD paths using Heap's algorithm; this is a brute force method 
+        Determines a variable order for the minimum number of BDD paths using Heap's algorithm; this is a brute force
+        method
         """
         newNodes = {}
         for key in functions:
@@ -436,7 +444,7 @@ class BooleanTranslator(Builder):
                 if index[i] < i:
                     swap = i % 2 * index[i]
                     leaves = self._leafSwap(nodes[key], leaves, swap+1, i+1)
-                    marks = [1]*(lenLeaves)
+                    marks = [1] * lenLeaves
                     for each in range(N):
                         set_size = 2**each
 #                         num_sets = 2**(N-each)
@@ -464,7 +472,7 @@ class BooleanTranslator(Builder):
                     i = 1
                 else:
                     index[i] = 0
-                    i+= 1
+                    i += 1
                     
         return newNodes
     
@@ -498,88 +506,97 @@ class BooleanTranslator(Builder):
         function_node = root.tree
         rank = self.function_ranks[function_node]
         k_rate = 1./rank
-        #~~~~~
-        if mode in ['ROA','GA','SYN']:
+        # ~~~~~
+        if mode in ['ROA', 'GA', 'SYN']:
             k_rate = 1.
             reset_mon = self.model.monomers['RESET']
-            reset_pat_N = as_complex_pattern(MonomerPattern(reset_mon, {'reset' : 'N'}, compartment=None))
-            reset_pat_Y = as_complex_pattern(MonomerPattern(reset_mon, {'reset' : 'Y'}, compartment=None))
-        #~~~~~
+            reset_pat_N = as_complex_pattern(MonomerPattern(reset_mon, {'reset': 'N'}, compartment=None))
+            reset_pat_Y = as_complex_pattern(MonomerPattern(reset_mon, {'reset': 'Y'}, compartment=None))
+        # ~~~~~
         rate_expr = self.parameter('k_rate_%s' % function_node, k_rate)
         paths = self._pathExpansion(root)
-        n = 0 # number of rules
+        n = 0  # number of rules for this node
         for p in paths:
             skip = False
-            #~~~~~
-            if mode in ['ROA','GA','SYN']:
+            # ~~~~~
+            if mode in ['ROA', 'GA', 'SYN']:
                 clipped = False
-            #~~~~~
-            if function_node in p: # node update depends on itself
-                idx = p.index(function_node)
-                if p[idx+1] == p[-1]: # this is a null event (not state change)
-                    skip = True
-                else:
-                    p = p[:idx] + p[idx+2:] # remove node + state
-                    #~~~~~
-                    if mode in ['ROA','GA','SYN']:
+                null = False
+            # ~~~~~
+            # Handle the case where node update rule depends on itself
+            if function_node in p:
+                idx = p.index(function_node)  # location of the update node in the path
+                if p[idx+1] == p[-1]:  # this is a null event (not a state change)
+                    if mode in ['ROA', 'GA', 'SYN']:
+                        null = True  # for these rules the 'reset' node gets changed, so we can't skip them
+                    else:  # GSP
+                        skip = True  # there's no 'reset' node for GSP, so we can skip this rule
+                if not skip:
+                    p = p[:idx] + p[idx+2:]  # remove node + state
+                    # ~~~~~
+                    if mode in ['ROA', 'GA', 'SYN']:
                         clipped = True
-                    #~~~~~
+                    # ~~~~~
             if not skip:
                 mon = self.model.monomers[function_node]
                 reactant_patterns = []
                 product_patterns = []
-                reac_states = {'state' : 'True'} if p[-1] == 'False' else {'state' : 'False'}
-                prod_states = {'state' : 'False'} if p[-1] == 'False' else {'state' : 'True'}
-                #~~~~~
-                if mode in ['ROA','GA','SYN']:
-                    if not clipped:
-                        reac_states = {'state' : WILD}
+                # default reactant state is the opposite of the last state in the path
+                reactant_states = {'state': 'False' if p[-1] == 'True' else 'True'}
+                product_states = {'state': p[-1]}
+                # ~~~~~
+                if mode in ['ROA', 'GA', 'SYN']:
+                    if not clipped:  # node update does NOT depend on itself
+                        # in this case, the reactant state can be either True or False, so use a wildcard
+                        reactant_states = {'state': WILD}
+                    elif null:  # node update DOES depend on itself
+                        # if this is a null event, the reactant and product states are the same
+                        reactant_states = {'state': p[-1]}
+                    # delay nodes
                     if rank > 1:
-                        reac_states['delay'] = str(rank-1)
-                        prod_states['delay'] = '0'    
+                        reactant_states['delay'] = str(rank-1)
+                        product_states['delay'] = '0'
                 if mode in ['ROA', 'SYN']:        
-                    reac_states['reset'] = 'N'
-                    prod_states['reset'] = 'Y'
+                    reactant_states['reset'] = 'N'
+                    product_states['reset'] = 'Y'
                 if mode == 'SYN':
-                    reac_states['copy'] = 'None'
-                    prod_states['copy'] = prod_states['state']
-                    prod_states['state'] = reac_states['state']
-                #~~~~~
-                reac_pat = as_complex_pattern(MonomerPattern(mon, reac_states, compartment=None))
-                prod_pat = as_complex_pattern(MonomerPattern(mon, prod_states, compartment=None))
+                    reactant_states['copy'] = 'None'
+                    product_states['copy'] = product_states['state']
+                    product_states['state'] = reactant_states['state']
+                # ~~~~~
+                reac_pat = as_complex_pattern(MonomerPattern(mon, reactant_states, compartment=None))
+                prod_pat = as_complex_pattern(MonomerPattern(mon, product_states, compartment=None))
                 reactant_patterns.append(reac_pat)
                 product_patterns.append(prod_pat)
                 j = 0
                 while j < len(p[:-1]):
                     if p[j] != function_node:
                         mon = self.model.monomers[p[j]]
-                        node_context = as_complex_pattern(MonomerPattern(mon, {'state' : p[j+1]}, 
-                                                                         compartment=None))
+                        node_context = as_complex_pattern(MonomerPattern(mon, {'state': p[j+1]}, compartment=None))
                         reactant_patterns.append(node_context)
                         product_patterns.append(node_context)
                     j = j + 2
-                #~~~~~
-                if mode in ['ROA','GA','SYN']:
+                # ~~~~~
+                if mode in ['ROA', 'GA', 'SYN']:
                     reactant_patterns.append(reset_pat_N)
                     if mode == 'GA':
                         product_patterns.append(reset_pat_Y)
                     else:
                         product_patterns.append(reset_pat_N)
-                #~~~~~
-                rule_expr = RuleExpression(ReactionPattern(reactant_patterns),
-                                          ReactionPattern(product_patterns),
-                                          is_reversible=False)
-                self.rule('%s_rule%d' % (function_node,n), rule_expr, rate_expr)
+                # ~~~~~
+                rule_expr = RuleExpression(ReactionPattern(reactant_patterns), ReactionPattern(product_patterns),
+                                           is_reversible=False)
+                self.rule('%s_rule%d' % (function_node, n), rule_expr, rate_expr)
                 n = n + 1
-        #~~~~~
+        # ~~~~~
         # delay, copy, and reset rules
-        if mode in ['ROA','GA','SYN']:
+        if mode in ['ROA', 'GA', 'SYN']:
             mon = self.model.monomers[function_node]
             # delay rules
             for d in range(rank-1):
-                reac_pat_states = {'delay' : str(d)}
-                prod_pat_states = {'delay' : str(d+1)}
-                if mode in ['ROA','SYN']:
+                reac_pat_states = {'delay': str(d)}
+                prod_pat_states = {'delay': str(d+1)}
+                if mode in ['ROA', 'SYN']:
                     reac_pat_states['reset'] = 'N'
                     prod_pat_states['reset'] = 'Y'
                 if mode == 'SYN':
@@ -595,13 +612,13 @@ class BooleanTranslator(Builder):
                 rule_expr = RuleExpression(ReactionPattern(reac_pat),
                                            ReactionPattern(prod_pat),
                                            is_reversible=False)
-                self.rule('%s_delay_%d_%d' % (function_node,d,d+1), rule_expr, rate_expr)
+                self.rule('%s_delay_%d_%d' % (function_node, d, d+1), rule_expr, rate_expr)
             # copy rules
             if mode == 'SYN':
-#                 mon = self.model.monomers[function_node]
-                for s in ['False','True']:
-                    reac_pat_states = {'state' : WILD, 'reset' : 'Y', 'copy' : s}
-                    prod_pat_states = {'state' : s, 'reset' : 'Y', 'copy' : 'None'}
+                # mon = self.model.monomers[function_node]
+                for s in ['False', 'True']:
+                    reac_pat_states = {'state': WILD, 'reset': 'Y', 'copy': s}
+                    prod_pat_states = {'state': s, 'reset': 'Y', 'copy': 'None'}
                     reac_pat = [as_complex_pattern(MonomerPattern(mon, reac_pat_states, compartment=None))]
                     prod_pat = [as_complex_pattern(MonomerPattern(mon, prod_pat_states, compartment=None))]
                     reac_pat.append(reset_pat_Y)
@@ -609,12 +626,14 @@ class BooleanTranslator(Builder):
                     rule_expr = RuleExpression(ReactionPattern(reac_pat),
                                                ReactionPattern(prod_pat),
                                                is_reversible=False)
-                    self.rule('%s_copy_%s' % (function_node,s), rule_expr, self.model.parameters['k_reset'])
+                    self.rule('%s_copy_%s' % (function_node, s), rule_expr, self.model.parameters['k_reset'])
                 # need a copy rule for delays to ensure that in each round three rules fire (state change, copy, reset) 
                 # for each species node (other than RESET)
                 if rank > 1:
-                    reac_pat = [as_complex_pattern(MonomerPattern(mon, {'reset' : 'Y', 'copy' : 'Delay'}, compartment=None))]
-                    prod_pat = [as_complex_pattern(MonomerPattern(mon, {'reset' : 'Y', 'copy' : 'None'},  compartment=None))]
+                    reac_pat = [as_complex_pattern(MonomerPattern(mon, {'reset': 'Y', 'copy': 'Delay'},
+                                                                  compartment=None))]
+                    prod_pat = [as_complex_pattern(MonomerPattern(mon, {'reset': 'Y', 'copy': 'None'},
+                                                                  compartment=None))]
                     reac_pat.append(reset_pat_Y)
                     prod_pat.append(reset_pat_Y)
                     rule_expr = RuleExpression(ReactionPattern(reac_pat),
@@ -622,11 +641,11 @@ class BooleanTranslator(Builder):
                                                is_reversible=False)
                     self.rule('%s_copy_Delay' % function_node, rule_expr, self.model.parameters['k_reset'])
             # reset rule(s)
-            if mode in ['ROA','SYN']:
+            if mode in ['ROA', 'SYN']:
                 reac_pat = [reset_pat_Y]
                 prod_pat = [reset_pat_Y]
-                reac_pat_states = {'reset' : 'Y'}
-                prod_pat_states = {'reset' : 'N'}
+                reac_pat_states = {'reset': 'Y'}
+                prod_pat_states = {'reset': 'N'}
                 if mode == 'SYN':
                     reac_pat_states['copy'] = 'None'
                     prod_pat_states['copy'] = 'None'
@@ -634,7 +653,7 @@ class BooleanTranslator(Builder):
                 prod_pat.append(as_complex_pattern(MonomerPattern(mon, prod_pat_states, compartment=None)))
                 rule_expr = RuleExpression(ReactionPattern(reac_pat), ReactionPattern(prod_pat), is_reversible=False)
                 self.rule('%s_reset' % function_node, rule_expr, self.model.parameters['k_reset'])
-            #~~~~~
+            # ~~~~~
     
     def _grove(self, functions, function_nodes): 
         """ 
@@ -642,7 +661,7 @@ class BooleanTranslator(Builder):
         """
         tree_list = []
         bdd_list = []
-        for keys,values in functions.items():
+        for keys, values in functions.items():
             tree_root = _Node(functions[keys], function_nodes[keys], keys, 1)
             nodeNum = len(function_nodes[keys])
             self._constructTree(tree_root)
@@ -658,13 +677,13 @@ class BooleanTranslator(Builder):
         """
         if indexList is None:
             indexList = {}
-        if expansion != None:
+        if expansion is not None:
             if expansion.index in indexList:        
                 present = False
                 for j in indexList[expansion.index]:
                     if j == expansion:
                         present = True
-                if present == False:
+                if present is False:
                     indexList[expansion.index].append(expansion)
                     self._displayIndex(expansion.getTrueNode(), indexList)
                     self._displayIndex(expansion.getFalseNode(), indexList)
@@ -674,7 +693,7 @@ class BooleanTranslator(Builder):
                 for j in indexList[expansion.index]:
                     if j == expansion:
                         present = True
-                if present == False:
+                if present is False:
                     indexList[expansion.index].append(expansion)
                     self._displayIndex(expansion.getTrueNode(), indexList)
                     self._displayIndex(expansion.getFalseNode(), indexList)
@@ -691,27 +710,27 @@ class BooleanTranslator(Builder):
         """
         indexList = self._displayIndex(expansion)
         graph = pydot.Dot(graph_type='digraph')
-        for i,j in enumerate(indexList, 1):
-            for k,l in enumerate(indexList[i]):
+        for i, j in enumerate(indexList, 1):
+            for k, l in enumerate(indexList[i]):
                 node = pydot.Node(indexList[i][k].index_name+indexList[i][k].id)
                 node.set('label', indexList[i][k].index_name)
                 node.set('rank', indexList[i][k].index)
                 graph.add_node(node)
-            for k,l in enumerate(indexList[i]):
+            for k, l in enumerate(indexList[i]):
                 if i != len(indexList):
                     graph.add_edge(pydot.Edge(pydot.Node(indexList[i][k].index_name+indexList[i][k].id), 
-                                              pydot.Node(indexList[i][k].true_node.index_name+indexList[i][k].true_node.id), 
-                                              label='1'))
+                                              pydot.Node(indexList[i][k].true_node.index_name+indexList[i][k].
+                                                         true_node.id), label='1'))
                     graph.add_edge(pydot.Edge(pydot.Node(indexList[i][k].index_name+indexList[i][k].id), 
-                                              pydot.Node(indexList[i][k].false_node.index_name+indexList[i][k].false_node.id), 
-                                              label='0'))
+                                              pydot.Node(indexList[i][k].false_node.index_name+indexList[i][k].
+                                                         false_node.id), label='0'))
     
         func_string = expansion.id + '* = ' + ' '.join(expansion.function)
         node_order = 'order: ' + ', '.join(expansion.function_nodes)
         n_nodes = len(graph.get_nodes())-2
         n_paths = len(self._pathExpansion(expansion))
-        nodes_and_paths = '%d nodes, %d paths' % (n_nodes,n_paths)
-        plt.title( '%s \n %s \n %s' % (func_string, node_order, nodes_and_paths ) )
+        nodes_and_paths = '%d nodes, %d paths' % (n_nodes, n_paths)
+        plt.title('%s \n %s \n %s' % (func_string, node_order, nodes_and_paths))
         png = graph.create_png(prog='dot')
         sio = StringIO()
         sio.write(png)
@@ -723,7 +742,8 @@ class BooleanTranslator(Builder):
         plt.savefig('%s.pdf' % fname, dpi=600, format='pdf')
         if show:
             plt.show()
-        
+
+
 def model_from_boolean(filename, format='BooleanNet', mode='GSP', force=False):
     """
     Convert a Boolean model into a PySB Model.
@@ -731,7 +751,7 @@ def model_from_boolean(filename, format='BooleanNet', mode='GSP', force=False):
     Notes
     -----
 
-    Currently only BooleanNet model files are supported. Future versions may
+    Currently, only BooleanNet model files are supported. Future versions may
     extend support to other formats, such as sbml-qual.
 
     Parameters
