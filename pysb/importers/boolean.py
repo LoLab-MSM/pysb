@@ -15,6 +15,7 @@ try:
     from StringIO import StringIO  # for Python 2
 except ImportError:
     from io import StringIO  # for Python 3
+import os.path
 
 
 class BooleanTranslationError(Exception):
@@ -159,7 +160,7 @@ class BooleanTranslator(Builder):
 
         # minimize the ROBDD paths
         orderedNodes = self._findMinPathOrderHeap(self.functions, self.function_nodes)
-        
+
         # create Rules
         BDDs = self._grove(self.functions, orderedNodes)
         for bdd in BDDs:
@@ -177,7 +178,9 @@ class BooleanTranslator(Builder):
         Creates and populates the instance dictionaries ``initial_states``, 
         ``functions``, ``function_nodes``, and ``function_ranks``.
         """
-        text = open(filename, 'r').read()
+        text = filename  # allow the 'filename' argument to be a string with the Boolean model in it
+        if os.path.isfile(filename):
+            text = open(filename, 'r').read()
         parser = boolmodel.BoolModel(mode='rank', text=text)
         parser.initialize()
         # Initial conditions
@@ -201,7 +204,7 @@ class BooleanTranslator(Builder):
                     self.functions[node].append(token.value)
                 if token.type == 'ID' and token.value not in self.function_nodes[node]:
                     self.function_nodes[node].append(token.value)
-    
+
     def _constructTree(self, current_node): 
         """
         Expands the tree via Shannon expansion and computes values of the leaves
