@@ -28,8 +28,10 @@ for mode in modes:
         print(mode, '-- TIME')
         trajectories = []
         for n in range(n_sims):
-            print(n)
-            x = run_ssa(model, t_end=tspan[-1], n_steps=len(tspan)-1)
+            print(n, end=' ')
+            if (n + 1) % 20 == 0 or n + 1 == n_sims:
+                print()
+            x = run_ssa(model, t_end=tspan[-1], n_steps=len(tspan)-1, verbose=True, cleanup=False)
             trajectories.append(x)
 
         # transpose to aid in plotting
@@ -38,19 +40,22 @@ for mode in modes:
         c_traj = np.array([tr['C_True_obs'] for tr in trajectories]).T
 
         # plot the mean concentrations at each time point
-        plt.figure('%s -- TIME' % mode)  
+        fig = plt.figure('%s_TIME' % mode, constrained_layout=True)
         plt.plot(tspan, a_traj.mean(axis=1), lw=2, label="A (%s)" % mode)
         plt.plot(tspan, b_traj.mean(axis=1), lw=2, label="B (%s)" % mode)
         plt.plot(tspan, c_traj.mean(axis=1), lw=2, label="C (%s)" % mode)
         plt.xlabel('Time (au)')
         plt.ylabel('Frequency')
         plt.legend(loc=0)
+        plt.savefig(fig.get_label())
         
     if rounds is not None:
         print(mode, '-- ROUNDS')
         trajectories = []
         for n in range(n_sims):
-            print(n)
+            print(n, end=' ')
+            if (n + 1) % 20 == 0 or n + 1 == n_sims:
+                print()
             x = run_ssa(model, t_end=output_step_interval*100, n_steps=1,
                         output_step_interval=output_step_interval, 
                         max_sim_steps=max_sim_steps)
@@ -62,12 +67,13 @@ for mode in modes:
         c_traj = np.array([tr['C_True_obs'] for tr in trajectories]).T
         
         # plot the mean concentrations at each update round
-        plt.figure('%s -- ROUNDS' % mode)
-        plt.plot(range(rounds+1), a_traj.mean(axis=1), '-o', lw=2, ms=12, label="A (%s)" % mode)
-        plt.plot(range(rounds+1), b_traj.mean(axis=1), '-o', lw=2, ms=12, label="B (%s)" % mode)
-        plt.plot(range(rounds+1), c_traj.mean(axis=1), '-o', lw=2, ms=12, label="C (%s)" % mode)
+        fig = plt.figure('%s_ROUNDS' % mode, constrained_layout=True)
+        plt.plot(range(rounds+1), a_traj.mean(axis=1), '-o', lw=2, ms=8, label="A (%s)" % mode)
+        plt.plot(range(rounds+1), b_traj.mean(axis=1), '-o', lw=2, ms=8, label="B (%s)" % mode)
+        plt.plot(range(rounds+1), c_traj.mean(axis=1), '-o', lw=2, ms=8, label="C (%s)" % mode)
         plt.xlabel('Round')
         plt.ylabel('Frequency')
         plt.legend(loc=0)
+        plt.savefig(fig.get_label())
 
 plt.show()
