@@ -471,7 +471,8 @@ class Simulator(object):
                     raise IndexError("new_params dictionary has unknown "
                                      "parameter name (%s)" % key)
                 # if val is a number, convert it to a single-element array
-                if not isinstance(val, Sequence):
+                if np.isscalar(val):
+                # if not isinstance(val, Sequence):
                     val = [val]
                     new_params[key] = np.array(val)
                 # Check all elements are the same length
